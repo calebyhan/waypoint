@@ -6,6 +6,7 @@ from supabase import Client
 
 from core.deps import get_current_user
 from core.supabase import get_supabase
+from services.github import list_repos as gh_list_repos
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -104,6 +105,44 @@ async def delete_workspace(
     db.table("workspaces").update({"state": "deleted"}).eq("id", workspace_id).execute()
 
 
+@router.get("/{workspace_id}/repos")
+async def list_repos_for_connection(
+    workspace_id: str,
+    user: dict = Depends(get_current_user),
+    db: Client = Depends(get_supabase),
+):
+    """List GitHub repos the user can connect to this workspace."""
+    _assert_membership(db, workspace_id, user["id"])
+    provider_token = _get_github_token(db, user["id"])
+    if not provider_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No GitHub token found")
+    repos = await gh_list_repos(provider_token)
+    return repos
+
+
+class ConnectRepo(BaseModel):
+    repo_owner: str
+    repo_name: str
+
+
+@router.post("/{workspace_id}/connect-repo")
+async def connect_repo(
+    workspace_id: str,
+    body: ConnectRepo,
+    user: dict = Depends(get_current_user),
+    db: Client = Depends(get_supabase),
+):
+    """Connect a GitHub repo to the workspace."""
+    _assert_owner(db, workspace_id, user["id"])
+    result = (
+        db.table("workspaces")
+        .update({"repo_owner": body.repo_owner, "repo_name": body.repo_name})
+        .eq("id", workspace_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
 class AddMember(BaseModel):
     user_id: str
 
@@ -145,3 +184,15 @@ def _assert_owner(db: Client, workspace_id: str, user_id: str):
     )
     if not result.data or result.data["owner_id"] != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not the workspace owner")
+
+
+def _get_github_token(db: Client, user_id: str) -> str | None:
+    """Get the user's GitHub provider token from Supabase auth identities."""
+    try:
+        result = db.auth.admin.get_user_by_id(user_id)
+        for identity in result.user.identities or []:
+            if identity.provider == "github":
+                return identity.identity_data.get("provider_token")
+    except Exception:
+        pass
+    return None
