@@ -1,17 +1,25 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
+
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 
 export default function LoginPage() {
+  const searchParams = useSearchParams();
+  const error = searchParams?.get("error");
+
   const handleLogin = async () => {
     const supabase = createClient();
-    await supabase.auth.signInWithOAuth({
+    const { error } = await supabase.auth.signInWithOAuth({
       provider: "github",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
       },
     });
+    if (error) {
+      console.error("GitHub sign-in failed:", error.message);
+    }
   };
 
   return (
@@ -23,6 +31,11 @@ export default function LoginPage() {
             AI-powered project management for small teams
           </p>
         </div>
+        {error && (
+          <p className="text-sm text-destructive">
+            Sign-in failed. Please try again.
+          </p>
+        )}
         <Button onClick={handleLogin} className="w-full" size="lg">
           Sign in with GitHub
         </Button>
