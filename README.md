@@ -50,7 +50,25 @@ waypoint/
 
 ## Setup
 
-_Coming soon._
+1. Create a [Supabase](https://supabase.com/dashboard) project, then link and push the schema:
+   ```
+   supabase login
+   supabase link --project-ref <your-project-ref>
+   supabase db push
+   ```
+2. Register a [GitHub OAuth App](https://github.com/settings/developers) with callback URL `https://<your-project-ref>.supabase.co/auth/v1/callback`, then enable it on the Supabase project:
+   ```
+   SUPABASE_AUTH_EXTERNAL_GITHUB_CLIENT_ID=... SUPABASE_AUTH_EXTERNAL_GITHUB_SECRET=... supabase config push
+   ```
+3. Copy `backend/.env.example` to `backend/.env` and `frontend/.env.example` to `frontend/.env.local`, filling in your Supabase URL/keys and GitHub OAuth credentials.
+4. Run both apps:
+   ```
+   cd backend && pip install -e ".[dev]" && uvicorn main:app --reload
+   cd frontend && npm install && npm run dev
+   ```
+5. Open `http://localhost:3000/login` and sign in with GitHub.
+
+Each PM also needs a free [Gemini API key](https://aistudio.google.com/apikey), added from the onboarding screen after first login.
 
 ## Contributing
 
