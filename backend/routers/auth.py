@@ -12,6 +12,10 @@ class UpdateProfile(BaseModel):
     gemini_api_key: str | None = None
 
 
+class AuthCallback(BaseModel):
+    github_token: str | None = None
+
+
 @router.get("/me")
 async def get_me(
     user: dict = Depends(get_current_user),
@@ -40,12 +44,19 @@ async def update_me(
 
 @router.post("/callback")
 async def auth_callback(
+    body: AuthCallback,
     user: dict = Depends(get_current_user),
     db: Client = Depends(get_supabase),
 ):
-    """Called after Supabase OAuth login to ensure a profile row exists."""
+    """Called after Supabase OAuth login to ensure a profile row exists.
+
+    Supabase only returns the GitHub provider token on the session at sign-in
+    time, so the frontend forwards it here to be persisted for later API calls.
+    """
     existing = db.table("profiles").select("id").eq("id", user["id"]).execute()
     if existing.data:
+        if body.github_token:
+            db.table("profiles").update({"github_token": body.github_token}).eq("id", user["id"]).execute()
         return {"status": "existing", "profile_id": user["id"]}
 
     user_meta = user.get("user_metadata", {})
@@ -53,5 +64,6 @@ async def auth_callback(
         "id": user["id"],
         "github_username": user_meta.get("user_name", user_meta.get("preferred_username", "")),
         "avatar_url": user_meta.get("avatar_url"),
+        "github_token": body.github_token,
     }).execute()
     return {"status": "created", "profile_id": user["id"]}

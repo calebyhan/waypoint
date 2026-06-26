@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from supabase import Client
 
+from services.github import get_github_token
 from services.matching import match_issue_to_task, match_pr_to_task
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ async def _reconcile_workspace(db: Client, workspace: dict):
     profile = db.table("profiles").select("gemini_api_key").eq("id", workspace["owner_id"]).single().execute()
     gemini_key = profile.data.get("gemini_api_key") if profile.data else None
 
-    token = _get_github_token(db, workspace["owner_id"])
+    token = get_github_token(db, workspace["owner_id"])
     if not token:
         return
 
@@ -131,12 +132,3 @@ def _maybe_mark_done(db: Client, task_id: str):
         db.table("tasks").update({"status": "done"}).eq("id", task_id).execute()
 
 
-def _get_github_token(db: Client, user_id: str) -> str | None:
-    try:
-        result = db.auth.admin.get_user_by_id(user_id)
-        for identity in result.user.identities or []:
-            if identity.provider == "github":
-                return identity.identity_data.get("provider_token")
-    except Exception:
-        logger.exception("Failed to fetch GitHub token for user %s", user_id)
-    return None

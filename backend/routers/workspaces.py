@@ -6,7 +6,7 @@ from supabase import Client
 
 from core.deps import get_current_user
 from core.supabase import get_supabase
-from services.github import list_repos as gh_list_repos
+from services.github import get_github_token, list_repos as gh_list_repos
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -113,7 +113,7 @@ async def list_repos_for_connection(
 ):
     """List GitHub repos the user can connect to this workspace."""
     _assert_membership(db, workspace_id, user["id"])
-    provider_token = _get_github_token(db, user["id"])
+    provider_token = get_github_token(db, user["id"])
     if not provider_token:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No GitHub token found")
     repos = await gh_list_repos(provider_token)
@@ -186,13 +186,3 @@ def _assert_owner(db: Client, workspace_id: str, user_id: str):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not the workspace owner")
 
 
-def _get_github_token(db: Client, user_id: str) -> str | None:
-    """Get the user's GitHub provider token from Supabase auth identities."""
-    try:
-        result = db.auth.admin.get_user_by_id(user_id)
-        for identity in result.user.identities or []:
-            if identity.provider == "github":
-                return identity.identity_data.get("provider_token")
-    except Exception:
-        pass
-    return None

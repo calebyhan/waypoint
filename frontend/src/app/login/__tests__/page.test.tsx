@@ -27,6 +27,7 @@ describe("LoginPage", () => {
       provider: "github",
       options: {
         redirectTo: expect.stringContaining("/auth/callback"),
+        scopes: expect.stringContaining("repo"),
       },
     });
   });

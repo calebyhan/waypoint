@@ -44,11 +44,12 @@ async def validate_repo(owner: str, name: str, access_token: str) -> bool:
         return resp.status_code == 200
 
 
-async def get_access_token_for_user(user_id: str, db) -> str | None:
-    """Retrieve the GitHub access token from the Supabase auth session."""
-    result = db.auth.admin.get_user_by_id(user_id)
-    identities = result.user.identities or []
-    for identity in identities:
-        if identity.provider == "github":
-            return identity.identity_data.get("access_token")
-    return None
+def get_github_token(db, user_id: str) -> str | None:
+    """Retrieve the user's stored GitHub OAuth token.
+
+    Supabase Auth only returns the provider access token on the session at
+    sign-in time and doesn't persist it on the user's identities, so the
+    callback flow stores it on `profiles.github_token` for later use.
+    """
+    result = db.table("profiles").select("github_token").eq("id", user_id).single().execute()
+    return result.data.get("github_token") if result.data else None
