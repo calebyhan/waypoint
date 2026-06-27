@@ -62,7 +62,7 @@ Respond with JSON matching this schema:
 async def generate_questions(content: str, gemini_key: str) -> ClarifyingQuestionsResult:
     client = genai.Client(api_key=gemini_key)
     response = await client.aio.models.generate_content(
-        model="gemini-2.0-flash-lite",
+        model="gemini-3.1-flash-lite",
         contents=QUESTIONS_PROMPT + content,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -86,7 +86,7 @@ async def decompose_prd(
 
     client = genai.Client(api_key=gemini_key)
     response = await client.aio.models.generate_content(
-        model="gemini-2.0-flash-lite",
+        model="gemini-3.1-flash-lite",
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -100,7 +100,7 @@ async def decompose_prd(
 async def generate_embedding(text: str, gemini_key: str) -> list[float]:
     client = genai.Client(api_key=gemini_key)
     response = await client.aio.models.embed_content(
-        model="gemini-embedding-exp-03-07",
+        model="gemini-embedding-2",
         contents=text,
     )
     return response.embeddings[0].values

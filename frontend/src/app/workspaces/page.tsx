@@ -110,6 +110,9 @@ export default function WorkspacesPage() {
               </div>
             </DialogContent>
           </Dialog>
+          <Button variant="ghost" onClick={() => router.push("/settings")}>
+            Settings
+          </Button>
           <Button variant="ghost" onClick={handleSignOut}>
             Sign out
           </Button>

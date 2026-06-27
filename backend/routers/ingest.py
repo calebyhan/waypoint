@@ -86,7 +86,7 @@ async def ingest_text(
 
     try:
         questions_result = await generate_questions(content, gemini_key)
-        _log_usage(db, user["id"], workspace_id, "gemini-2.0-flash-lite", 500, 200)
+        _log_usage(db, user["id"], workspace_id, "gemini-3.1-flash-lite", 500, 200)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
 
@@ -118,7 +118,7 @@ async def ingest_pdf(
 
     try:
         questions_result = await generate_questions(content, gemini_key)
-        _log_usage(db, user["id"], workspace_id, "gemini-2.0-flash-lite", 500, 200)
+        _log_usage(db, user["id"], workspace_id, "gemini-3.1-flash-lite", 500, 200)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
 
@@ -160,7 +160,7 @@ async def _do_decompose(
 ):
     try:
         result = await decompose_prd(content, answers, gemini_key)
-        _log_usage(db, user_id, workspace_id, "gemini-2.0-flash-lite", 6000, 2000)
+        _log_usage(db, user_id, workspace_id, "gemini-3.1-flash-lite", 6000, 2000)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
 
