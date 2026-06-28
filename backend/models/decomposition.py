@@ -36,6 +36,13 @@ class EpicTasksResult(BaseModel):
     tasks: list[DecompositionTask]
 
 
+class ProjectContext(BaseModel):
+    start_date: str = ""
+    timeline: str = ""
+    team_size: str = ""
+    budget: str = ""
+
+
 class ClarifyingQuestion(BaseModel):
     question: str
     why: str

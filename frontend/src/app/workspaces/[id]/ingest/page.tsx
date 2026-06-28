@@ -32,6 +32,7 @@ export default function IngestPage() {
 
   const [step, setStep] = useState<Step>("input");
   const [content, setContent] = useState("");
+  const [context, setContext] = useState({ start_date: "", timeline: "", team_size: "", budget: "" });
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [analyzing, setAnalyzing] = useState(false);
@@ -51,7 +52,7 @@ export default function IngestPage() {
         }>(`/workspaces/${id}/ingest`, {
           method: "POST",
           token: session.access_token,
-          body: JSON.stringify({ content: textContent }),
+          body: JSON.stringify({ content: textContent, context }),
         });
 
         if (result.cached || result.decomposition) {
@@ -132,7 +133,7 @@ export default function IngestPage() {
       }>(`/workspaces/${id}/ingest/answer`, {
         method: "POST",
         token: session.access_token,
-        body: JSON.stringify({ content, answers }),
+        body: JSON.stringify({ content, context, answers }),
       });
 
       if (result.decomposition) {
@@ -145,7 +146,7 @@ export default function IngestPage() {
     } finally {
       setAnalyzing(false);
     }
-  }, [id, session, content, answers, router]);
+  }, [id, session, content, context, answers, router]);
 
   return (
     <div className="mx-auto max-w-2xl p-8 space-y-6">
@@ -172,6 +173,44 @@ export default function IngestPage() {
               rows={12}
               className="font-mono text-sm"
             />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="start_date">Start Date</Label>
+                <Input
+                  id="start_date"
+                  type="date"
+                  value={context.start_date}
+                  onChange={(e) => setContext((prev) => ({ ...prev, start_date: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="timeline">Timeline</Label>
+                <Input
+                  id="timeline"
+                  placeholder="e.g. 6 weeks"
+                  value={context.timeline}
+                  onChange={(e) => setContext((prev) => ({ ...prev, timeline: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="team_size">Team Size</Label>
+                <Input
+                  id="team_size"
+                  placeholder="e.g. 3 engineers"
+                  value={context.team_size}
+                  onChange={(e) => setContext((prev) => ({ ...prev, team_size: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="budget">Budget</Label>
+                <Input
+                  id="budget"
+                  placeholder="e.g. $50k"
+                  value={context.budget}
+                  onChange={(e) => setContext((prev) => ({ ...prev, budget: e.target.value }))}
+                />
+              </div>
+            </div>
             <div className="flex gap-2">
               <Button
                 onClick={() => handleAnalyze(content)}

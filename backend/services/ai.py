@@ -11,16 +11,24 @@ from models.decomposition import (
     EpicSkeleton,
     EpicTasksResult,
     PlanSkeleton,
+    ProjectContext,
 )
 
 logger = logging.getLogger(__name__)
 
 QUESTIONS_PROMPT = """You are an AI project planning assistant. A project manager has provided a PRD (Product Requirements Document) or project description. Your job is to ask up to 3 clarifying questions that will help you produce a better task breakdown.
 
-Focus on:
-- Deadline / timeline constraints
-- Team size and composition
-- Tech stack or existing infrastructure
+The PM has already provided structured context for: timeline, team size, and budget. Do NOT ask about those — focus on gaps the PRD leaves open that would meaningfully change the decomposition.
+
+Areas to consider:
+- Target users, expected scale, and performance requirements
+- Integration requirements (third-party APIs, existing systems, data sources)
+- Compliance, security, or regulatory constraints (HIPAA, SOC2, GDPR, etc.)
+- MVP scope vs full vision — phased rollout or all-at-once?
+- Success metrics and how they'll be measured
+- Tech stack preferences or existing infrastructure constraints
+- Deployment environment (cloud provider, on-prem, edge, etc.)
+- Design or UX requirements (accessibility, branding, mobile-first, etc.)
 
 Only ask questions whose answers would meaningfully change the task decomposition. If the document is clear enough, return fewer questions or none.
 
@@ -30,8 +38,6 @@ Respond with JSON matching this schema:
     {"question": "...", "why": "..."}
   ]
 }
-
-PRD Content:
 """
 
 SKELETON_PROMPT = """You are an AI project planning assistant. Given a PRD, produce a high-level epic plan that covers the ENTIRE project from an empty repo to a deployed, tested product. Always assume we are starting from complete scratch — no existing codebase, no existing infrastructure, no prior code. Even if the PRD references "the current system" or "our existing X," treat those as descriptions of the target behavior, not existing code.
@@ -94,11 +100,29 @@ Respond with JSON matching this schema:
 DECOMPOSITION_MODEL = "gemini-3.1-flash-lite"
 
 
-async def generate_questions(content: str, gemini_key: str) -> ClarifyingQuestionsResult:
+def _build_structured_context(ctx: ProjectContext | None) -> str:
+    if not ctx:
+        return ""
+    parts = []
+    if ctx.start_date:
+        parts.append(f"Start date: {ctx.start_date}")
+    if ctx.timeline:
+        parts.append(f"Timeline: {ctx.timeline}")
+    if ctx.team_size:
+        parts.append(f"Team size: {ctx.team_size}")
+    if ctx.budget:
+        parts.append(f"Budget: {ctx.budget}")
+    if not parts:
+        return ""
+    return "\n\nStructured context from PM:\n" + "\n".join(parts)
+
+
+async def generate_questions(content: str, project_context: ProjectContext, gemini_key: str) -> ClarifyingQuestionsResult:
     client = genai.Client(api_key=gemini_key)
+    prompt = QUESTIONS_PROMPT + "\n\nPRD Content:\n" + content + _build_structured_context(project_context)
     response = await client.aio.models.generate_content(
         model="gemini-3.1-flash-lite",
-        contents=QUESTIONS_PROMPT + content,
+        contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.3,
@@ -108,8 +132,9 @@ async def generate_questions(content: str, gemini_key: str) -> ClarifyingQuestio
     return ClarifyingQuestionsResult(**data)
 
 
-def _build_prd_context(content: str, answers: dict[str, str] | None) -> str:
+def _build_prd_context(content: str, project_context: ProjectContext, answers: dict[str, str] | None) -> str:
     ctx = f"\n\nPRD Content:\n{content}"
+    ctx += _build_structured_context(project_context)
     if answers:
         ctx += "\n\nAdditional context from PM:\n"
         for question, answer in answers.items():
@@ -119,10 +144,11 @@ def _build_prd_context(content: str, answers: dict[str, str] | None) -> str:
 
 async def _generate_skeleton(
     content: str,
+    project_context: ProjectContext,
     answers: dict[str, str] | None,
     client: genai.Client,
 ) -> PlanSkeleton:
-    prompt = SKELETON_PROMPT + _build_prd_context(content, answers)
+    prompt = SKELETON_PROMPT + _build_prd_context(content, project_context, answers)
     response = await client.aio.models.generate_content(
         model=DECOMPOSITION_MODEL,
         contents=prompt,
@@ -137,6 +163,7 @@ async def _generate_skeleton(
 
 async def _generate_epic_tasks(
     content: str,
+    project_context: ProjectContext,
     answers: dict[str, str] | None,
     epic: EpicSkeleton,
     all_epics: list[EpicSkeleton],
@@ -144,7 +171,7 @@ async def _generate_epic_tasks(
     client: genai.Client,
 ) -> list:
     prompt = EPIC_TASKS_PROMPT
-    prompt += _build_prd_context(content, answers)
+    prompt += _build_prd_context(content, project_context, answers)
 
     prompt += "\n\nFULL EPIC PLAN (for technology/architecture consistency):\n"
     for ep in all_epics:
@@ -175,18 +202,19 @@ async def _generate_epic_tasks(
 
 async def decompose_prd(
     content: str,
+    project_context: ProjectContext,
     answers: dict[str, str] | None,
     gemini_key: str,
 ) -> DecompositionResult:
     client = genai.Client(api_key=gemini_key)
 
-    skeleton = await _generate_skeleton(content, answers, client)
+    skeleton = await _generate_skeleton(content, project_context, answers, client)
 
     epics: list[DecompositionEpic] = []
     context: list[dict] = []
 
     for epic_skel in skeleton.epics:
-        tasks = await _generate_epic_tasks(content, answers, epic_skel, skeleton.epics, context, client)
+        tasks = await _generate_epic_tasks(content, project_context, answers, epic_skel, skeleton.epics, context, client)
         epics.append(DecompositionEpic(title=epic_skel.title, tasks=tasks))
         context.append({"epic": epic_skel.title, "tasks": [t.title for t in tasks]})
 

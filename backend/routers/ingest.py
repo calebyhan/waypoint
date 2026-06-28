@@ -6,6 +6,7 @@ from supabase import Client
 
 from core.deps import get_current_user
 from core.supabase import get_supabase
+from models.decomposition import ProjectContext
 from services.ai import decompose_prd, generate_questions
 from services.pdf import extract_text
 
@@ -14,10 +15,12 @@ router = APIRouter(prefix="/workspaces/{workspace_id}/ingest", tags=["ingest"])
 
 class IngestText(BaseModel):
     content: str
+    context: ProjectContext = ProjectContext()
 
 
 class AnswerQuestions(BaseModel):
     content: str
+    context: ProjectContext = ProjectContext()
     answers: dict[str, str]
 
 
@@ -85,7 +88,7 @@ async def ingest_text(
         return {"cached": True, "decomposition": cached.data[0]["decomposition"]}
 
     try:
-        questions_result = await generate_questions(content, gemini_key)
+        questions_result = await generate_questions(content, body.context, gemini_key)
         _log_usage(db, user["id"], workspace_id, "gemini-3.1-flash-lite", 500, 200)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
@@ -93,7 +96,7 @@ async def ingest_text(
     if questions_result.questions:
         return {"cached": False, "questions": [q.model_dump() for q in questions_result.questions]}
 
-    return await _do_decompose(db, user["id"], workspace_id, content, None, gemini_key)
+    return await _do_decompose(db, user["id"], workspace_id, content, body.context, None, gemini_key)
 
 
 @router.post("/upload")
@@ -115,9 +118,10 @@ async def ingest_pdf(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not extract text from PDF")
 
     gemini_key = _get_gemini_key(db, user["id"])
+    project_context = ProjectContext()
 
     try:
-        questions_result = await generate_questions(content, gemini_key)
+        questions_result = await generate_questions(content, project_context, gemini_key)
         _log_usage(db, user["id"], workspace_id, "gemini-3.1-flash-lite", 500, 200)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
@@ -129,7 +133,7 @@ async def ingest_pdf(
             "questions": [q.model_dump() for q in questions_result.questions],
         }
 
-    return await _do_decompose(db, user["id"], workspace_id, content, None, gemini_key)
+    return await _do_decompose(db, user["id"], workspace_id, content, project_context, None, gemini_key)
 
 
 @router.post("/answer")
@@ -147,7 +151,7 @@ async def answer_questions(
     if not content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Content is empty")
 
-    return await _do_decompose(db, user["id"], workspace_id, content, body.answers, gemini_key)
+    return await _do_decompose(db, user["id"], workspace_id, content, body.context, body.answers, gemini_key)
 
 
 async def _do_decompose(
@@ -155,11 +159,12 @@ async def _do_decompose(
     user_id: str,
     workspace_id: str,
     content: str,
+    project_context: ProjectContext,
     answers: dict[str, str] | None,
     gemini_key: str,
 ):
     try:
-        result = await decompose_prd(content, answers, gemini_key)
+        result = await decompose_prd(content, project_context, answers, gemini_key)
         _log_usage(db, user_id, workspace_id, "gemini-3.1-pro", 20000, 8000)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")

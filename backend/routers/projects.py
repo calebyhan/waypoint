@@ -31,6 +31,8 @@ class TaskCreate(BaseModel):
     priority: str = "p1"
     dependencies: list[str] = []
     sort_order: int = 0
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -44,6 +46,8 @@ class TaskUpdate(BaseModel):
     dependencies: list[str] | None = None
     epic_id: str | None = None
     version: int | None = None
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 class BulkPlanUpdate(BaseModel):
@@ -222,7 +226,7 @@ async def create_task(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
-    result = db.table("tasks").insert({
+    insert_data = {
         "workspace_id": workspace_id,
         "epic_id": body.epic_id,
         "title": body.title,
@@ -234,7 +238,12 @@ async def create_task(
         "priority": body.priority,
         "dependencies": body.dependencies,
         "sort_order": body.sort_order,
-    }).execute()
+    }
+    if body.start_date:
+        insert_data["start_date"] = body.start_date
+    if body.end_date:
+        insert_data["end_date"] = body.end_date
+    result = db.table("tasks").insert(insert_data).execute()
     return result.data[0]
 
 
@@ -369,7 +378,7 @@ async def reingest_prd(
     existing_tasks = db.table("tasks").select("*").eq("workspace_id", workspace_id).execute().data
 
     try:
-        new_decomposition = await decompose_prd(body.content, None, gemini_key)
+        new_decomposition = await decompose_prd(body.content, None, None, gemini_key)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
 

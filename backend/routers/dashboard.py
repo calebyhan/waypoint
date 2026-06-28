@@ -123,6 +123,28 @@ async def update_task_assignee(
     return result.data[0] if result.data else None
 
 
+class ScheduleUpdate(BaseModel):
+    start_date: str | None = None
+    end_date: str | None = None
+    assignee: str | None = None
+
+
+@router.patch("/tasks/{task_id}/schedule")
+async def update_task_schedule(
+    workspace_id: str,
+    task_id: str,
+    body: ScheduleUpdate,
+    user: dict = Depends(get_current_user),
+    db: Client = Depends(get_supabase),
+):
+    _assert_membership(db, workspace_id, user["id"])
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
+    result = db.table("tasks").update(updates).eq("id", task_id).execute()
+    return result.data[0] if result.data else None
+
+
 class ProposalDecision(BaseModel):
     accept: bool
 
