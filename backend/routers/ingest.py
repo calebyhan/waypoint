@@ -160,7 +160,7 @@ async def _do_decompose(
 ):
     try:
         result = await decompose_prd(content, answers, gemini_key)
-        _log_usage(db, user_id, workspace_id, "gemini-3.1-flash-lite", 6000, 2000)
+        _log_usage(db, user_id, workspace_id, "gemini-3.1-pro", 20000, 8000)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
 

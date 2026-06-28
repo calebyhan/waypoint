@@ -30,6 +30,9 @@ interface Task {
   epic_id: string;
   title: string;
   description: string | null;
+  motivation?: string | null;
+  deliverables?: string[];
+  important_notes?: string[];
   estimated_days: number | null;
   priority: string;
   status: string;
@@ -49,6 +52,9 @@ interface DecompositionEpic {
   tasks: {
     title: string;
     description: string;
+    motivation?: string;
+    deliverables?: string[];
+    important_notes?: string[];
     estimated_days: number;
     priority: string;
     dependencies: string[];
@@ -59,7 +65,7 @@ interface PlanResponse {
   source: "plan" | "decomposition";
   epics: Epic[];
   tasks: Task[];
-  decomposition?: { epics: DecompositionEpic[] };
+  decomposition?: { summary?: string; epics: DecompositionEpic[] };
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -203,6 +209,18 @@ export default function ProposalPage() {
     if (!decomposition) return null;
     return (
       <div className="space-y-6">
+        {decomposition.summary && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Business Justification</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {decomposition.summary}
+              </p>
+            </CardContent>
+          </Card>
+        )}
         {decomposition.epics.map((epic, ei) => (
           <Card key={ei}>
             <CardHeader
@@ -235,6 +253,25 @@ export default function ProposalPage() {
                     <p className="text-sm text-muted-foreground">
                       {task.description}
                     </p>
+                    {task.motivation && (
+                      <p className="text-xs italic text-muted-foreground">
+                        {task.motivation}
+                      </p>
+                    )}
+                    {(task.deliverables?.length ?? 0) > 0 && (
+                      <ul className="list-disc pl-5 text-sm space-y-0.5">
+                        {task.deliverables?.map((d, di) => (
+                          <li key={di}>{d}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {(task.important_notes?.length ?? 0) > 0 && (
+                      <ul className="list-disc pl-5 text-sm space-y-0.5 text-amber-700 dark:text-amber-400">
+                        {task.important_notes?.map((n, ni) => (
+                          <li key={ni}>{n}</li>
+                        ))}
+                      </ul>
+                    )}
                     {task.dependencies.length > 0 && (
                       <p className="text-xs text-muted-foreground">
                         Depends on: {task.dependencies.join(", ")}
@@ -384,6 +421,25 @@ export default function ProposalPage() {
                               <p className="text-sm text-muted-foreground">
                                 {task.description}
                               </p>
+                            )}
+                            {task.motivation && (
+                              <p className="text-xs italic text-muted-foreground">
+                                {task.motivation}
+                              </p>
+                            )}
+                            {(task.deliverables?.length ?? 0) > 0 && (
+                              <ul className="list-disc pl-5 text-sm space-y-0.5">
+                                {task.deliverables?.map((d, di) => (
+                                  <li key={di}>{d}</li>
+                                ))}
+                              </ul>
+                            )}
+                            {(task.important_notes?.length ?? 0) > 0 && (
+                              <ul className="list-disc pl-5 text-sm space-y-0.5 text-amber-700 dark:text-amber-400">
+                                {task.important_notes?.map((n, ni) => (
+                                  <li key={ni}>{n}</li>
+                                ))}
+                              </ul>
                             )}
                           </>
                         )}

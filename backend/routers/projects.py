@@ -24,6 +24,9 @@ class TaskCreate(BaseModel):
     epic_id: str
     title: str
     description: str | None = None
+    motivation: str | None = None
+    deliverables: list[str] = []
+    important_notes: list[str] = []
     estimated_days: int | None = None
     priority: str = "p1"
     dependencies: list[str] = []
@@ -224,6 +227,9 @@ async def create_task(
         "epic_id": body.epic_id,
         "title": body.title,
         "description": body.description,
+        "motivation": body.motivation,
+        "deliverables": body.deliverables,
+        "important_notes": body.important_notes,
         "estimated_days": body.estimated_days,
         "priority": body.priority,
         "dependencies": body.dependencies,
@@ -420,6 +426,9 @@ async def approve_reingest(
                 "epic_id": task_data.get("epic_id", target_epic_id),
                 "title": task_data["title"],
                 "description": task_data.get("description"),
+                "motivation": task_data.get("motivation"),
+                "deliverables": task_data.get("deliverables", []),
+                "important_notes": task_data.get("important_notes", []),
                 "estimated_days": task_data.get("estimated_days"),
                 "priority": task_data.get("priority", "p1"),
                 "status": "open",
@@ -444,6 +453,9 @@ def _materialize_decomposition(db: Client, workspace_id: str, decomposition: dic
                 "epic_id": epic_id,
                 "title": task_data["title"],
                 "description": task_data.get("description"),
+                "motivation": task_data.get("motivation"),
+                "deliverables": task_data.get("deliverables", []),
+                "important_notes": task_data.get("important_notes", []),
                 "estimated_days": task_data.get("estimated_days"),
                 "priority": task_data.get("priority", "p1"),
                 "sort_order": j,

@@ -52,7 +52,13 @@ def test_approve_plan_materializes_decomposition_into_tasks(client, fake_db, wor
                 {
                     "title": "Authentication",
                     "tasks": [
-                        {"title": "Implement JWT login", "description": "desc", "estimated_days": 2, "priority": "p0"},
+                        {
+                            "title": "Implement JWT login", "description": "desc",
+                            "motivation": "Unblocks all authenticated routes",
+                            "deliverables": ["POST /api/auth/login"],
+                            "important_notes": ["Token expiry is 24h"],
+                            "estimated_days": 2, "priority": "p0",
+                        },
                         {"title": "Implement JWT logout", "description": "desc", "estimated_days": 1, "priority": "p1"},
                     ],
                 }
@@ -68,6 +74,10 @@ def test_approve_plan_materializes_decomposition_into_tasks(client, fake_db, wor
     assert len(epics) == 1
     assert len(tasks) == 2
     assert all(t["status"] == "open" for t in tasks)
+    login_task = next(t for t in tasks if t["title"] == "Implement JWT login")
+    assert login_task["motivation"] == "Unblocks all authenticated routes"
+    assert login_task["deliverables"] == ["POST /api/auth/login"]
+    assert login_task["important_notes"] == ["Token expiry is 24h"]
 
 
 def test_approve_plan_without_any_plan_returns_400(client, workspace):
