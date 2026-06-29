@@ -457,7 +457,7 @@ def _materialize_decomposition(db: Client, workspace_id: str, decomposition: dic
         epic_id = epic_result.data[0]["id"]
 
         for j, task_data in enumerate(epic_data.get("tasks", [])):
-            db.table("tasks").insert({
+            insert = {
                 "workspace_id": workspace_id,
                 "epic_id": epic_id,
                 "title": task_data["title"],
@@ -467,5 +467,11 @@ def _materialize_decomposition(db: Client, workspace_id: str, decomposition: dic
                 "important_notes": task_data.get("important_notes", []),
                 "estimated_days": task_data.get("estimated_days"),
                 "priority": task_data.get("priority", "p1"),
+                "assignee": task_data.get("assignee"),
                 "sort_order": j,
-            }).execute()
+            }
+            if task_data.get("start_date"):
+                insert["start_date"] = task_data["start_date"]
+            if task_data.get("end_date"):
+                insert["end_date"] = task_data["end_date"]
+            db.table("tasks").insert(insert).execute()

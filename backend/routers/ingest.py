@@ -1,4 +1,5 @@
 import hashlib
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
@@ -6,9 +7,10 @@ from supabase import Client
 
 from core.deps import get_current_user
 from core.supabase import get_supabase
-from models.decomposition import ProjectContext
+from models.decomposition import ProjectContext, TeamMemberInfo
 from services.ai import decompose_prd, generate_questions
 from services.pdf import extract_text
+from services.scheduling import schedule_tasks
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/ingest", tags=["ingest"])
 
@@ -37,6 +39,15 @@ def _get_gemini_key(db: Client, user_id: str) -> str:
 
 def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
+
+
+def _enrich_context_with_team(db: Client, workspace_id: str, ctx: ProjectContext) -> ProjectContext:
+    if ctx.team_members:
+        return ctx
+    result = db.table("team_members").select("name, role, weekly_capacity_hours").eq("workspace_id", workspace_id).execute()
+    if result.data:
+        ctx.team_members = [TeamMemberInfo(**row) for row in result.data]
+    return ctx
 
 
 def _assert_membership(db: Client, workspace_id: str, user_id: str):
@@ -76,6 +87,8 @@ async def ingest_text(
     if not content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Content is empty")
 
+    context = _enrich_context_with_team(db, workspace_id, body.context)
+
     content_h = _content_hash(content)
     cached = (
         db.table("ingestions")
@@ -88,7 +101,7 @@ async def ingest_text(
         return {"cached": True, "decomposition": cached.data[0]["decomposition"]}
 
     try:
-        questions_result = await generate_questions(content, body.context, gemini_key)
+        questions_result = await generate_questions(content, context, gemini_key)
         _log_usage(db, user["id"], workspace_id, "gemini-3.1-flash-lite", 500, 200)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
@@ -96,7 +109,7 @@ async def ingest_text(
     if questions_result.questions:
         return {"cached": False, "questions": [q.model_dump() for q in questions_result.questions]}
 
-    return await _do_decompose(db, user["id"], workspace_id, content, body.context, None, gemini_key)
+    return await _do_decompose(db, user["id"], workspace_id, content, context, None, gemini_key)
 
 
 @router.post("/upload")
@@ -118,7 +131,7 @@ async def ingest_pdf(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not extract text from PDF")
 
     gemini_key = _get_gemini_key(db, user["id"])
-    project_context = ProjectContext()
+    project_context = _enrich_context_with_team(db, workspace_id, ProjectContext())
 
     try:
         questions_result = await generate_questions(content, project_context, gemini_key)
@@ -151,7 +164,9 @@ async def answer_questions(
     if not content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Content is empty")
 
-    return await _do_decompose(db, user["id"], workspace_id, content, body.context, body.answers, gemini_key)
+    context = _enrich_context_with_team(db, workspace_id, body.context)
+
+    return await _do_decompose(db, user["id"], workspace_id, content, context, body.answers, gemini_key)
 
 
 async def _do_decompose(
@@ -170,6 +185,16 @@ async def _do_decompose(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
 
     decomposition = result.model_dump()
+
+    project_start = None
+    if project_context.start_date:
+        try:
+            project_start = date.fromisoformat(project_context.start_date)
+        except ValueError:
+            pass
+
+    all_tasks = [t for epic in decomposition.get("epics", []) for t in epic.get("tasks", [])]
+    schedule_tasks(all_tasks, project_start)
 
     db.table("ingestions").insert({
         "workspace_id": workspace_id,

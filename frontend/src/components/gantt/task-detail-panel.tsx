@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { X } from "lucide-react";
 import type { GanttTask, GanttEpic } from "./gantt-types";
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -19,9 +20,16 @@ const PRIORITY_COLORS: Record<string, string> = {
   p2: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
 };
 
+const STATUS_ITEMS: Record<string, string> = {
+  open: "Open",
+  in_review: "In Review",
+  done: "Done",
+};
+
 interface TaskDetailPanelProps {
   task: GanttTask;
   epic?: GanttEpic;
+  allTasks?: GanttTask[];
   onClose: () => void;
   onStatusChange: (taskId: string, status: string) => void;
   onAssigneeChange: (taskId: string, assignee: string) => void;
@@ -31,17 +39,23 @@ interface TaskDetailPanelProps {
 export function TaskDetailPanel({
   task,
   epic,
+  allTasks,
   onClose,
   onStatusChange,
   onAssigneeChange,
   onScheduleChange,
 }: TaskDetailPanelProps) {
+  const depTitleMap = new Map<string, string>();
+  if (allTasks) {
+    for (const t of allTasks) depTitleMap.set(t.id, t.title);
+  }
+
   return (
     <div className="flex h-full flex-col border-l border-border bg-card">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h3 className="text-sm font-semibold truncate">{task.title}</h3>
-        <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose}>
-          &times;
+        <h3 className="text-sm font-semibold truncate pr-2">{task.title}</h3>
+        <Button variant="ghost" size="icon-xs" onClick={onClose}>
+          <X className="h-3.5 w-3.5" />
         </Button>
       </div>
 
@@ -54,8 +68,8 @@ export function TaskDetailPanel({
         )}
 
         <div className="flex gap-2">
-          <Badge className={PRIORITY_COLORS[task.priority]}>{task.priority}</Badge>
-          <Badge variant="outline">{task.status}</Badge>
+          <Badge className={PRIORITY_COLORS[task.priority]}>{task.priority.toUpperCase()}</Badge>
+          <Badge variant="outline">{STATUS_ITEMS[task.status] ?? task.status}</Badge>
         </div>
 
         {task.description && (
@@ -70,6 +84,7 @@ export function TaskDetailPanel({
           <Select
             value={task.status}
             onValueChange={(v) => { if (v) onStatusChange(task.id, v); }}
+            items={STATUS_ITEMS}
           >
             <SelectTrigger className="h-8 mt-1">
               <SelectValue />
@@ -132,10 +147,14 @@ export function TaskDetailPanel({
 
         {task.dependencies.length > 0 && (
           <div>
-            <Label className="text-xs text-muted-foreground">Dependencies</Label>
+            <Label className="text-xs text-muted-foreground">
+              Dependencies ({task.dependencies.length})
+            </Label>
             <ul className="mt-1 space-y-1">
               {task.dependencies.map((dep) => (
-                <li key={dep} className="text-xs text-muted-foreground">{dep}</li>
+                <li key={dep} className="text-sm text-foreground/80">
+                  {depTitleMap.get(dep) ?? dep.slice(0, 8)}
+                </li>
               ))}
             </ul>
           </div>

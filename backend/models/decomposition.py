@@ -10,6 +10,7 @@ class DecompositionTask(BaseModel):
     estimated_days: int = Field(ge=1, le=10)
     priority: str = Field(pattern=r"^p[012]$", default="p1")
     dependencies: list[str] = Field(default_factory=list)
+    assignee: str | None = None
 
 
 class DecompositionEpic(BaseModel):
@@ -36,11 +37,18 @@ class EpicTasksResult(BaseModel):
     tasks: list[DecompositionTask]
 
 
+class TeamMemberInfo(BaseModel):
+    name: str
+    role: str = "fullstack"
+    weekly_capacity_hours: int = 40
+
+
 class ProjectContext(BaseModel):
     start_date: str = ""
     timeline: str = ""
     team_size: str = ""
     budget: str = ""
+    team_members: list[TeamMemberInfo] = Field(default_factory=list)
 
 
 class ClarifyingQuestion(BaseModel):

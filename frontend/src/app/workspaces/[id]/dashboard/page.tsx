@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +20,11 @@ import { SummaryStats } from "@/components/gantt/summary-stats";
 import { FilterBar } from "@/components/gantt/filter-bar";
 import { TaskDetailPanel } from "@/components/gantt/task-detail-panel";
 import type { ZoomLevel } from "@/components/gantt/gantt-utils";
+
+interface Workspace {
+  id: string;
+  name: string;
+}
 
 interface EpicProgress {
   id: string;
@@ -75,11 +81,38 @@ interface DashboardResponse {
   unlinked_prs: GithubRef[];
 }
 
-const PRIORITY_COLORS: Record<string, string> = {
+const INSIGHT_PRIORITY_COLORS: Record<string, string> = {
   p0: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
   p1: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
   p2: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
 };
+
+function DashboardSkeleton() {
+  return (
+    <div className="flex h-screen flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border px-6 py-3">
+        <div className="flex items-center gap-3">
+          <div className="h-8 w-8 animate-pulse rounded bg-muted" />
+          <div className="h-6 w-48 animate-pulse rounded bg-muted" />
+        </div>
+        <div className="h-8 w-28 animate-pulse rounded bg-muted" />
+      </div>
+      <div className="flex-1 overflow-hidden p-6 space-y-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <div key={i} className="h-20 animate-pulse rounded-xl bg-muted" />
+          ))}
+        </div>
+        <div className="flex gap-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="h-8 w-28 animate-pulse rounded-lg bg-muted" />
+          ))}
+        </div>
+        <div className="h-64 animate-pulse rounded-lg bg-muted" />
+      </div>
+    </div>
+  );
+}
 
 export default function DashboardPage() {
   const { id } = useParams<{ id: string }>();
@@ -95,6 +128,12 @@ export default function DashboardPage() {
   const [filterStatus, setFilterStatus] = useState("");
   const [filterPriority, setFilterPriority] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+
+  const { data: workspace } = useQuery<Workspace>({
+    queryKey: ["workspace", id],
+    queryFn: () => apiFetch(`/workspaces/${id}`, { token: session!.access_token }),
+    enabled: !!session,
+  });
 
   const { data, isLoading } = useQuery<DashboardResponse>({
     queryKey: ["dashboard", id],
@@ -167,16 +206,13 @@ export default function DashboardPage() {
   }, []);
 
   if (isLoading || !data) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <p className="text-muted-foreground">Loading dashboard...</p>
-      </div>
-    );
+    return <DashboardSkeleton />;
   }
 
   const ganttTasks: GanttTask[] = data.tasks.map((t) => ({
     id: t.id,
     title: t.title,
+    description: t.description ?? undefined,
     status: t.status,
     priority: t.priority,
     assignee: t.assignee,
@@ -203,12 +239,22 @@ export default function DashboardPage() {
     <div className="flex h-screen flex-col overflow-hidden">
       {/* Top bar */}
       <div className="flex items-center justify-between border-b border-border px-6 py-3">
-        <h1 className="text-xl font-bold">Dashboard</h1>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => router.push(`/workspaces/${id}/reingest`)}>
-            Re-ingest PRD
+        <div className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => router.push("/workspaces")}
+          >
+            <ArrowLeft className="h-4 w-4" />
           </Button>
+          <h1 className="text-xl font-bold">
+            {workspace?.name ?? "Dashboard"}
+          </h1>
         </div>
+        <Button variant="outline" size="sm" onClick={() => router.push(`/workspaces/${id}/reingest`)}>
+          <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+          Re-ingest PRD
+        </Button>
       </div>
 
       {/* Main content */}
@@ -218,17 +264,22 @@ export default function DashboardPage() {
           <div className="space-y-4 overflow-y-auto p-6">
             {/* Insights banner */}
             {insights.length > 0 && (
-              <div className="flex gap-3 overflow-x-auto pb-1">
-                {insights.map((insight, i) => (
-                  <Card key={i} className="min-w-[260px] shrink-0">
-                    <CardContent className="p-3 space-y-1">
-                      <Badge className={PRIORITY_COLORS[insight.priority]} variant="secondary">
-                        {insight.type.replace("_", " ")}
-                      </Badge>
-                      <p className="text-sm">{insight.message}</p>
-                    </CardContent>
-                  </Card>
-                ))}
+              <div className="space-y-2">
+                <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Insights
+                </h2>
+                <div className="flex gap-3 overflow-x-auto pb-1">
+                  {insights.map((insight, i) => (
+                    <Card key={i} className="min-w-[260px] shrink-0">
+                      <CardContent className="p-3 space-y-1">
+                        <Badge className={INSIGHT_PRIORITY_COLORS[insight.priority]} variant="secondary">
+                          {insight.type.replaceAll("_", " ")}
+                        </Badge>
+                        <p className="text-sm">{insight.message}</p>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -236,30 +287,35 @@ export default function DashboardPage() {
             {data.pending_proposals.length > 0 && (
               <div className="space-y-2">
                 <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Pending Match Proposals
+                  Pending Match Proposals ({data.pending_proposals.length})
                 </h2>
                 {data.pending_proposals.map((p) => {
                   const task = data.tasks.find((t) => t.id === p.task_id);
+                  const target = p.github_issue_id ? "issue" : "PR";
                   return (
                     <Card key={p.id}>
                       <CardContent className="flex items-center justify-between p-3">
-                        <p className="text-sm">
-                          Link to &quot;{task?.title ?? p.task_id}&quot;? (score{" "}
-                          {p.similarity_score.toFixed(2)})
-                        </p>
-                        <div className="flex gap-2">
+                        <div className="min-w-0 flex-1 pr-4">
+                          <p className="text-sm font-medium truncate">
+                            {task?.title ?? "Unknown task"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Match a GitHub {target} &middot; {Math.round(p.similarity_score * 100)}% confidence
+                          </p>
+                        </div>
+                        <div className="flex gap-2 shrink-0">
                           <Button
                             size="sm"
                             onClick={() => proposalMutation.mutate({ proposalId: p.id, accept: true })}
                           >
-                            Yes
+                            Accept
                           </Button>
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => proposalMutation.mutate({ proposalId: p.id, accept: false })}
                           >
-                            No
+                            Dismiss
                           </Button>
                         </div>
                       </CardContent>
@@ -321,6 +377,7 @@ export default function DashboardPage() {
                 dependencies: selectedTask.dependencies ?? [],
               }}
               epic={selectedEpic ? { id: selectedEpic.id, title: selectedEpic.title } : undefined}
+              allTasks={ganttTasks}
               onClose={() => setSelectedTaskId(null)}
               onStatusChange={(taskId, status) => statusMutation.mutate({ taskId, status })}
               onAssigneeChange={(taskId, assignee) => assigneeMutation.mutate({ taskId, assignee })}

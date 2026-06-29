@@ -8,6 +8,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { X } from "lucide-react";
 import type { GanttTask, GanttEpic } from "./gantt-types";
 import type { ZoomLevel } from "./gantt-utils";
 
@@ -28,6 +29,27 @@ interface FilterBarProps {
 
 const ALL = "__all__";
 
+const ZOOM_ITEMS: Record<string, string> = {
+  week: "Week",
+  "2week": "2 Weeks",
+  month: "Month",
+  quarter: "Quarter",
+};
+
+const STATUS_ITEMS: Record<string, string> = {
+  [ALL]: "All status",
+  open: "Open",
+  in_review: "In Review",
+  done: "Done",
+};
+
+const PRIORITY_ITEMS: Record<string, string> = {
+  [ALL]: "All priority",
+  p0: "P0",
+  p1: "P1",
+  p2: "P2",
+};
+
 export function FilterBar({
   tasks,
   epics,
@@ -44,11 +66,21 @@ export function FilterBar({
 }: FilterBarProps) {
   const assignees = Array.from(new Set(tasks.map((t) => t.assignee).filter(Boolean) as string[])).sort();
 
+  const assigneeItems: Record<string, string> = { [ALL]: "All assignees" };
+  for (const a of assignees) assigneeItems[a] = a;
+
+  const epicItems: Record<string, string> = { [ALL]: "All epics" };
+  for (const e of epics) epicItems[e.id] = e.title;
+
   const hasFilters = filterAssignee || filterEpic || filterStatus || filterPriority;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Select value={zoom} onValueChange={(v) => onZoomChange(v as ZoomLevel)}>
+      <Select
+        value={zoom}
+        onValueChange={(v) => onZoomChange(v as ZoomLevel)}
+        items={ZOOM_ITEMS}
+      >
         <SelectTrigger className="w-28 h-8 text-xs">
           <SelectValue />
         </SelectTrigger>
@@ -62,7 +94,11 @@ export function FilterBar({
 
       <div className="h-4 w-px bg-border" />
 
-      <Select value={filterAssignee || ALL} onValueChange={(v) => onFilterAssignee(v === ALL ? "" : v ?? "")}>
+      <Select
+        value={filterAssignee || ALL}
+        onValueChange={(v) => onFilterAssignee(v === ALL ? "" : v ?? "")}
+        items={assigneeItems}
+      >
         <SelectTrigger className="w-32 h-8 text-xs">
           <SelectValue placeholder="Assignee" />
         </SelectTrigger>
@@ -74,7 +110,11 @@ export function FilterBar({
         </SelectContent>
       </Select>
 
-      <Select value={filterEpic || ALL} onValueChange={(v) => onFilterEpic(v === ALL ? "" : v ?? "")}>
+      <Select
+        value={filterEpic || ALL}
+        onValueChange={(v) => onFilterEpic(v === ALL ? "" : v ?? "")}
+        items={epicItems}
+      >
         <SelectTrigger className="w-36 h-8 text-xs">
           <SelectValue placeholder="Epic" />
         </SelectTrigger>
@@ -86,7 +126,11 @@ export function FilterBar({
         </SelectContent>
       </Select>
 
-      <Select value={filterStatus || ALL} onValueChange={(v) => onFilterStatus(v === ALL ? "" : v ?? "")}>
+      <Select
+        value={filterStatus || ALL}
+        onValueChange={(v) => onFilterStatus(v === ALL ? "" : v ?? "")}
+        items={STATUS_ITEMS}
+      >
         <SelectTrigger className="w-28 h-8 text-xs">
           <SelectValue placeholder="Status" />
         </SelectTrigger>
@@ -98,7 +142,11 @@ export function FilterBar({
         </SelectContent>
       </Select>
 
-      <Select value={filterPriority || ALL} onValueChange={(v) => onFilterPriority(v === ALL ? "" : v ?? "")}>
+      <Select
+        value={filterPriority || ALL}
+        onValueChange={(v) => onFilterPriority(v === ALL ? "" : v ?? "")}
+        items={PRIORITY_ITEMS}
+      >
         <SelectTrigger className="w-28 h-8 text-xs">
           <SelectValue placeholder="Priority" />
         </SelectTrigger>
@@ -122,7 +170,8 @@ export function FilterBar({
             onFilterPriority("");
           }}
         >
-          Clear filters
+          <X className="mr-1 h-3 w-3" />
+          Clear
         </Button>
       )}
     </div>

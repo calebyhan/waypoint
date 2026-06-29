@@ -122,7 +122,15 @@ export function GanttChart({
       const key = t.assignee ?? "Unassigned";
       map.get(key)?.push(t);
     }
-    return assignees.map((a) => ({ assignee: a, tasks: map.get(a) ?? [] }));
+    return assignees.map((a) => {
+      const tasks = map.get(a) ?? [];
+      tasks.sort((a, b) => {
+        const aStart = a.start_date ?? "";
+        const bStart = b.start_date ?? "";
+        return aStart.localeCompare(bStart);
+      });
+      return { assignee: a, tasks };
+    });
   }, [filtered, assignees]);
 
   const { start: timelineStart, end: timelineEnd } = useMemo(
@@ -263,7 +271,7 @@ export function GanttChart({
             <div
               key={row.assignee}
               className="flex items-center border-b border-border/50 px-3 text-sm font-medium"
-              style={{ height: ROW_HEIGHT * Math.max(row.tasks.length, 1) }}
+              style={{ height: ROW_HEIGHT }}
             >
               <span className="truncate">{row.assignee}</span>
             </div>
@@ -320,9 +328,9 @@ export function GanttChart({
               <div
                 key={row.assignee}
                 className="relative border-b border-border/50"
-                style={{ height: ROW_HEIGHT * Math.max(row.tasks.length, 1) }}
+                style={{ height: ROW_HEIGHT }}
               >
-                {row.tasks.map((task, taskIdx) => {
+                {row.tasks.map((task) => {
                   const pos = getDragAdjustedPosition(task);
                   const epic = epicMap.get(task.epic_id);
                   const isDragging = dragState?.taskId === task.id;
@@ -333,7 +341,7 @@ export function GanttChart({
                       epicTitle={epic?.title}
                       left={pos.left}
                       width={pos.width}
-                      top={taskIdx * ROW_HEIGHT + 6}
+                      top={6}
                       isDragging={isDragging}
                       onMouseDownMove={(e) => handleMouseDown(task.id, "move", e)}
                       onMouseDownResize={(e) => handleMouseDown(task.id, "resize", e)}

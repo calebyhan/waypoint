@@ -12,6 +12,7 @@ from models.decomposition import (
     EpicTasksResult,
     PlanSkeleton,
     ProjectContext,
+    TeamMemberInfo,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,16 @@ Rules:
 - "motivation" is 1-2 sentences on why this ticket matters now / what it unblocks — not a restatement of the deliverables.
 - Dependencies: a ticket may depend on another ticket within this epic, OR on any ticket title from the PREVIOUSLY GENERATED TICKETS list below. Do not invent dependencies on tickets that don't appear in either list. Dependency direction must reflect build order — if ticket A must exist before ticket B can be built (e.g., you need a repo before you can configure CI for it, you need a schema before you can write queries against it), then B depends on A, not the reverse.
 
+TEAM ASSIGNMENT:
+If a team roster is provided in the structured context, assign each ticket to the most appropriate team member based on their role/specialty. Match ticket focus areas to member roles:
+- Frontend tickets (components, pages, UI, CSS, state management) → frontend or fullstack members
+- Backend tickets (APIs, services, database, auth, migrations) → backend or fullstack members
+- Infrastructure/CI/CD tickets → devops or fullstack members
+- Design tickets → design members
+- Testing tickets → qa or the member whose domain the tests cover
+- Fullstack members can take any ticket type
+Distribute work roughly evenly across the team, weighted by each member's weekly_capacity_hours. If no team roster is provided, leave "assignee" as null.
+
 Respond with JSON matching this schema:
 {
   "tasks": [
@@ -91,7 +102,8 @@ Respond with JSON matching this schema:
       "important_notes": ["Non-goal, gotcha, or constraint", "..."],
       "estimated_days": 2,
       "priority": "p0",
-      "dependencies": ["Other ticket title"]
+      "dependencies": ["Other ticket title"],
+      "assignee": "Team member name or null"
     }
   ]
 }
@@ -112,6 +124,10 @@ def _build_structured_context(ctx: ProjectContext | None) -> str:
         parts.append(f"Team size: {ctx.team_size}")
     if ctx.budget:
         parts.append(f"Budget: {ctx.budget}")
+    if ctx.team_members:
+        parts.append("Team members:")
+        for m in ctx.team_members:
+            parts.append(f"  - {m.name} ({m.role}, {m.weekly_capacity_hours}h/week)")
     if not parts:
         return ""
     return "\n\nStructured context from PM:\n" + "\n".join(parts)
