@@ -14,9 +14,55 @@ import {
 } from "./gantt-utils";
 import { GanttBar } from "./gantt-bar";
 
-const ROW_HEIGHT = 44;
+const LANE_HEIGHT = 40;
+const LANE_GAP = 4;
+const ROW_PADDING = 4;
 const LABEL_WIDTH = 180;
 const HEADER_HEIGHT = 52;
+
+interface LanedTask {
+  task: GanttTask;
+  lane: number;
+}
+
+function assignLanes(tasks: GanttTask[]): { laned: LanedTask[]; laneCount: number } {
+  if (tasks.length === 0) return { laned: [], laneCount: 1 };
+
+  const sorted = [...tasks].sort((a, b) => {
+    const aStart = a.start_date ?? "";
+    const bStart = b.start_date ?? "";
+    return aStart.localeCompare(bStart);
+  });
+
+  const laneEnds: string[] = [];
+  const laned: LanedTask[] = [];
+
+  for (const task of sorted) {
+    const taskStart = task.start_date ?? "";
+
+    let placed = -1;
+    for (let i = 0; i < laneEnds.length; i++) {
+      if (laneEnds[i] < taskStart) {
+        placed = i;
+        break;
+      }
+    }
+
+    if (placed === -1) {
+      placed = laneEnds.length;
+      laneEnds.push("");
+    }
+
+    laneEnds[placed] = task.end_date ?? taskStart;
+    laned.push({ task, lane: placed });
+  }
+
+  return { laned, laneCount: Math.max(laneEnds.length, 1) };
+}
+
+function getRowHeight(laneCount: number) {
+  return laneCount * LANE_HEIGHT + (laneCount - 1) * LANE_GAP + ROW_PADDING * 2;
+}
 
 interface GanttChartProps {
   tasks: GanttTask[];
@@ -124,12 +170,8 @@ export function GanttChart({
     }
     return assignees.map((a) => {
       const tasks = map.get(a) ?? [];
-      tasks.sort((a, b) => {
-        const aStart = a.start_date ?? "";
-        const bStart = b.start_date ?? "";
-        return aStart.localeCompare(bStart);
-      });
-      return { assignee: a, tasks };
+      const { laned, laneCount } = assignLanes(tasks);
+      return { assignee: a, laned, laneCount };
     });
   }, [filtered, assignees]);
 
@@ -271,7 +313,7 @@ export function GanttChart({
             <div
               key={row.assignee}
               className="flex items-center border-b border-border/50 px-3 text-sm font-medium"
-              style={{ height: ROW_HEIGHT }}
+              style={{ height: getRowHeight(row.laneCount) }}
             >
               <span className="truncate">{row.assignee}</span>
             </div>
@@ -328,9 +370,9 @@ export function GanttChart({
               <div
                 key={row.assignee}
                 className="relative border-b border-border/50"
-                style={{ height: ROW_HEIGHT }}
+                style={{ height: getRowHeight(row.laneCount) }}
               >
-                {row.tasks.map((task) => {
+                {row.laned.map(({ task, lane }) => {
                   const pos = getDragAdjustedPosition(task);
                   const epic = epicMap.get(task.epic_id);
                   const isDragging = dragState?.taskId === task.id;
@@ -341,7 +383,7 @@ export function GanttChart({
                       epicTitle={epic?.title}
                       left={pos.left}
                       width={pos.width}
-                      top={6}
+                      top={ROW_PADDING + lane * (LANE_HEIGHT + LANE_GAP)}
                       isDragging={isDragging}
                       onMouseDownMove={(e) => handleMouseDown(task.id, "move", e)}
                       onMouseDownResize={(e) => handleMouseDown(task.id, "resize", e)}

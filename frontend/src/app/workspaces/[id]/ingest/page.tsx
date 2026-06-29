@@ -63,6 +63,8 @@ export default function IngestPage() {
     timeline: "",
     team_size: "",
     budget: "",
+    tickets_per_member_per_week: 0,
+    assign_day: -1,
   });
   const [content, setContent] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -428,6 +430,63 @@ export default function IngestPage() {
                 />
               </div>
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ticket_pace">Ticket Pacing</Label>
+              <div className="flex items-center gap-3">
+                <Select
+                  value={String(context.tickets_per_member_per_week)}
+                  onValueChange={(v) =>
+                    setContext((prev) => ({
+                      ...prev,
+                      tickets_per_member_per_week: parseFloat(v ?? "0"),
+                    }))
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">No limit (back-to-back)</SelectItem>
+                    <SelectItem value="1">1 ticket / person / week</SelectItem>
+                    <SelectItem value="2">2 tickets / person / week</SelectItem>
+                    <SelectItem value="3">3 tickets / person / week</SelectItem>
+                    <SelectItem value="5">5 tickets / person / week</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Controls how frequently each team member starts new tickets.
+              </p>
+            </div>
+            {context.tickets_per_member_per_week > 0 && (
+              <div className="space-y-1.5">
+                <Label htmlFor="assign_day">Assign Day</Label>
+                <Select
+                  value={String(context.assign_day)}
+                  onValueChange={(v) =>
+                    setContext((prev) => ({
+                      ...prev,
+                      assign_day: parseInt(v ?? "-1"),
+                    }))
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="-1">Any day</SelectItem>
+                    <SelectItem value="0">Monday</SelectItem>
+                    <SelectItem value="1">Tuesday</SelectItem>
+                    <SelectItem value="2">Wednesday</SelectItem>
+                    <SelectItem value="3">Thursday</SelectItem>
+                    <SelectItem value="4">Friday</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Snap new ticket starts to a specific day of the week.
+                </p>
+              </div>
+            )}
             <div className="flex justify-between pt-2">
               <Button variant="ghost" onClick={() => setStep("team")}>
                 <ArrowLeft className="size-4 mr-1.5" />

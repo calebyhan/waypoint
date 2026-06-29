@@ -194,7 +194,12 @@ async def _do_decompose(
             pass
 
     all_tasks = [t for epic in decomposition.get("epics", []) for t in epic.get("tasks", [])]
-    schedule_tasks(all_tasks, project_start)
+    schedule_tasks(
+        all_tasks,
+        project_start,
+        project_context.tickets_per_member_per_week,
+        project_context.assign_day,
+    )
 
     db.table("ingestions").insert({
         "workspace_id": workspace_id,

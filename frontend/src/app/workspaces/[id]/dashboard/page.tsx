@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { ArrowLeft, Settings } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -251,9 +251,8 @@ export default function DashboardPage() {
             {workspace?.name ?? "Dashboard"}
           </h1>
         </div>
-        <Button variant="outline" size="sm" onClick={() => router.push(`/workspaces/${id}/reingest`)}>
-          <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-          Re-ingest PRD
+        <Button variant="ghost" size="icon-sm" onClick={() => router.push(`/workspaces/${id}/settings`)}>
+          <Settings className="h-4 w-4" />
         </Button>
       </div>
 

@@ -49,6 +49,8 @@ class ProjectContext(BaseModel):
     team_size: str = ""
     budget: str = ""
     team_members: list[TeamMemberInfo] = Field(default_factory=list)
+    tickets_per_member_per_week: float = 0
+    assign_day: int = -1
 
 
 class ClarifyingQuestion(BaseModel):

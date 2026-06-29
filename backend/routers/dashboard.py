@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from supabase import Client
@@ -5,6 +7,7 @@ from supabase import Client
 from core.deps import get_current_user
 from core.supabase import get_supabase
 from services.insights import generate_insights
+from services.scheduling import schedule_tasks
 
 router = APIRouter(prefix="/workspaces/{workspace_id}", tags=["dashboard"])
 
@@ -179,3 +182,54 @@ async def decide_match_proposal(
             db.table("tasks").update({"status": "in_review"}).eq("id", proposal.data["task_id"]).execute()
 
     return {"status": new_status}
+
+
+class RescheduleRequest(BaseModel):
+    start_date: str | None = None
+    tickets_per_member_per_week: float = 0
+    assign_day: int = -1
+
+
+@router.post("/reschedule")
+async def reschedule_tasks(
+    workspace_id: str,
+    body: RescheduleRequest,
+    user: dict = Depends(get_current_user),
+    db: Client = Depends(get_supabase),
+):
+    """Re-run the scheduler on all workspace tasks with updated parameters."""
+    _assert_membership(db, workspace_id, user["id"])
+
+    tasks = (
+        db.table("tasks")
+        .select("id, title, estimated_days, assignee, dependencies, status")
+        .eq("workspace_id", workspace_id)
+        .order("sort_order")
+        .execute()
+        .data
+    )
+    if not tasks:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No tasks to reschedule")
+
+    project_start = None
+    if body.start_date:
+        try:
+            project_start = date.fromisoformat(body.start_date)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid start_date format")
+
+    schedule_tasks(tasks, project_start, body.tickets_per_member_per_week, body.assign_day)
+
+    for task in tasks:
+        db.table("tasks").update({
+            "start_date": task.get("start_date"),
+            "end_date": task.get("end_date"),
+        }).eq("id", task["id"]).execute()
+
+    db.table("workspaces").update({
+        "schedule_start_date": body.start_date,
+        "tickets_per_member_per_week": body.tickets_per_member_per_week,
+        "assign_day": body.assign_day,
+    }).eq("id", workspace_id).execute()
+
+    return {"status": "rescheduled", "count": len(tasks)}
