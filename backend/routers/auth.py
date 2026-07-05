@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from supabase import Client
 
+from core.crypto import encrypt
 from core.deps import get_current_user
 from core.supabase import get_supabase
 
@@ -22,7 +23,13 @@ async def get_me(
     db: Client = Depends(get_supabase),
 ):
     """Return the current user's profile."""
-    result = db.table("profiles").select("*").eq("id", user["id"]).single().execute()
+    result = (
+        db.table("profiles")
+        .select("id, github_username, avatar_url, gemini_api_key, created_at")
+        .eq("id", user["id"])
+        .single()
+        .execute()
+    )
     if not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
     return result.data
@@ -56,7 +63,7 @@ async def auth_callback(
     existing = db.table("profiles").select("id").eq("id", user["id"]).execute()
     if existing.data:
         if body.github_token:
-            db.table("profiles").update({"github_token": body.github_token}).eq("id", user["id"]).execute()
+            db.table("profiles").update({"github_token": encrypt(body.github_token)}).eq("id", user["id"]).execute()
         return {"status": "existing", "profile_id": user["id"]}
 
     user_meta = user.get("user_metadata", {})
@@ -64,6 +71,6 @@ async def auth_callback(
         "id": user["id"],
         "github_username": user_meta.get("user_name", user_meta.get("preferred_username", "")),
         "avatar_url": user_meta.get("avatar_url"),
-        "github_token": body.github_token,
+        "github_token": encrypt(body.github_token) if body.github_token else None,
     }).execute()
     return {"status": "created", "profile_id": user["id"]}

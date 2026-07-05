@@ -4,6 +4,7 @@ os.environ.setdefault("SUPABASE_URL", "https://placeholder.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "placeholder")
 os.environ.setdefault("GITHUB_CLIENT_ID", "placeholder")
 os.environ.setdefault("GITHUB_CLIENT_SECRET", "placeholder")
+os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "mn6gmCBhY3YI57T6RsMdCjS7jOJDgEb5S0DQj8Fhz8w=")
 
 import pytest
 from fastapi.testclient import TestClient

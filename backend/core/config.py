@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     supabase_service_key: str
     github_client_id: str
     github_client_secret: str
+    token_encryption_key: str
     frontend_url: str = "http://localhost:3000"
     api_host: str = "0.0.0.0"
     api_port: int = 8000

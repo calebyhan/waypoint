@@ -1,5 +1,7 @@
 import httpx
 
+from core.crypto import decrypt
+
 GITHUB_API = "https://api.github.com"
 
 
@@ -49,7 +51,11 @@ def get_github_token(db, user_id: str) -> str | None:
 
     Supabase Auth only returns the provider access token on the session at
     sign-in time and doesn't persist it on the user's identities, so the
-    callback flow stores it on `profiles.github_token` for later use.
+    callback flow stores it on `profiles.github_token` (encrypted) for later
+    use. Tokens stored before encryption was introduced are plaintext and
+    won't decrypt; treat that as "not connected" so the user reconnects.
     """
     result = db.table("profiles").select("github_token").eq("id", user_id).single().execute()
-    return result.data.get("github_token") if result.data else None
+    if not result.data or not result.data.get("github_token"):
+        return None
+    return decrypt(result.data["github_token"])
