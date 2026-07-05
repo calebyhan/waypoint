@@ -20,6 +20,7 @@ import { SummaryStats } from "@/components/gantt/summary-stats";
 import { FilterBar } from "@/components/gantt/filter-bar";
 import { TaskDetailPanel } from "@/components/gantt/task-detail-panel";
 import type { ZoomLevel } from "@/components/gantt/gantt-utils";
+import { KanbanBoard } from "@/components/kanban";
 
 interface Workspace {
   id: string;
@@ -355,6 +356,23 @@ export default function DashboardPage() {
               filterStatus={filterStatus || undefined}
               filterPriority={filterPriority || undefined}
             />
+
+            {/* Kanban board */}
+            <div className="space-y-2">
+              <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Board
+              </h2>
+              <KanbanBoard
+                tasks={ganttTasks}
+                epics={ganttEpics}
+                onStatusChange={(taskId, status) => statusMutation.mutate({ taskId, status })}
+                onTaskClick={handleTaskClick}
+                filterAssignee={filterAssignee || undefined}
+                filterEpic={filterEpic || undefined}
+                filterStatus={filterStatus || undefined}
+                filterPriority={filterPriority || undefined}
+              />
+            </div>
           </div>
         </div>
 
