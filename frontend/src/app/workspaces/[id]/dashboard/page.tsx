@@ -36,10 +36,12 @@ interface EpicProgress {
 }
 
 interface GithubRef {
+  id: string;
   number: number;
   title: string;
   state: string;
   merged?: boolean;
+  html_url?: string | null;
 }
 
 interface DashTask {
@@ -55,8 +57,12 @@ interface DashTask {
   estimated_days: number | null;
   dependencies: string[];
   created_at: string;
+  github_issue_id: string | null;
+  github_conflict: boolean;
+  github_conflict_reason: string | null;
+  github_sync_error: string | null;
   linked_issue: GithubRef | null;
-  linked_pr: GithubRef | null;
+  linked_prs: GithubRef[];
 }
 
 interface MatchProposal {
@@ -195,6 +201,34 @@ export default function DashboardPage() {
     },
   });
 
+  const unlinkMutation = useMutation({
+    mutationFn: ({ taskId, kind, githubPrId }: { taskId: string; kind: "issue" | "pr"; githubPrId?: string }) => {
+      const params = new URLSearchParams({ kind });
+      if (githubPrId) params.set("github_pr_id", githubPrId);
+      return apiFetch(`/workspaces/${id}/tasks/${taskId}/github-link?${params.toString()}`, {
+        method: "DELETE",
+        token: session!.access_token,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["dashboard", id] });
+      toast.success("Unlinked from GitHub");
+    },
+  });
+
+  const resolveConflictMutation = useMutation({
+    mutationFn: ({ taskId, resolution }: { taskId: string; resolution: "keep_waypoint" | "keep_github" }) =>
+      apiFetch(`/workspaces/${id}/tasks/${taskId}/resolve-conflict`, {
+        method: "POST",
+        token: session!.access_token,
+        body: JSON.stringify({ resolution }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["dashboard", id] });
+      toast.success("Conflict resolved");
+    },
+  });
+
   const handleScheduleChange = useCallback(
     (change: ScheduleChange) => {
       scheduleMutation.mutate(change);
@@ -222,6 +256,11 @@ export default function DashboardPage() {
     end_date: t.end_date,
     estimated_days: t.estimated_days,
     dependencies: t.dependencies ?? [],
+    github_issue: t.linked_issue,
+    github_prs: t.linked_prs,
+    github_conflict: t.github_conflict,
+    github_conflict_reason: t.github_conflict_reason,
+    github_sync_error: t.github_sync_error,
   }));
 
   const ganttEpics: GanttEpic[] = data.epics.map((e) => ({
@@ -291,7 +330,10 @@ export default function DashboardPage() {
                 </h2>
                 {data.pending_proposals.map((p) => {
                   const task = data.tasks.find((t) => t.id === p.task_id);
-                  const target = p.github_issue_id ? "issue" : "PR";
+                  const target = p.github_issue_id
+                    ? data.unlinked_issues.find((i) => i.id === p.github_issue_id)
+                    : data.unlinked_prs.find((pr) => pr.id === p.github_pr_id);
+                  const targetLabel = p.github_issue_id ? "issue" : "PR";
                   return (
                     <Card key={p.id}>
                       <CardContent className="flex items-center justify-between p-3">
@@ -299,8 +341,9 @@ export default function DashboardPage() {
                           <p className="text-sm font-medium truncate">
                             {task?.title ?? "Unknown task"}
                           </p>
-                          <p className="text-xs text-muted-foreground">
-                            Match a GitHub {target} &middot; {Math.round(p.similarity_score * 100)}% confidence
+                          <p className="text-xs text-muted-foreground truncate">
+                            {target ? `#${target.number} ${target.title}` : `Unknown ${targetLabel}`}
+                            {" "}&middot; {Math.round(p.similarity_score * 100)}% confidence
                           </p>
                         </div>
                         <div className="flex gap-2 shrink-0">
@@ -392,6 +435,11 @@ export default function DashboardPage() {
                 end_date: selectedTask.end_date,
                 estimated_days: selectedTask.estimated_days,
                 dependencies: selectedTask.dependencies ?? [],
+                github_issue: selectedTask.linked_issue,
+                github_prs: selectedTask.linked_prs,
+                github_conflict: selectedTask.github_conflict,
+                github_conflict_reason: selectedTask.github_conflict_reason,
+                github_sync_error: selectedTask.github_sync_error,
               }}
               epic={selectedEpic ? { id: selectedEpic.id, title: selectedEpic.title } : undefined}
               allTasks={ganttTasks}
@@ -401,6 +449,8 @@ export default function DashboardPage() {
               onScheduleChange={(taskId, startDate, endDate) =>
                 handleScheduleChange({ taskId, start_date: startDate, end_date: endDate })
               }
+              onUnlinkGithub={(taskId, kind, githubPrId) => unlinkMutation.mutate({ taskId, kind, githubPrId })}
+              onResolveConflict={(taskId, resolution) => resolveConflictMutation.mutate({ taskId, resolution })}
             />
           </div>
         )}

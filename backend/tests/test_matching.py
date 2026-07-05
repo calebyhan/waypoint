@@ -1,6 +1,12 @@
 import pytest
 
-from services.matching import _fuzzy_title_match, _is_rejected_pair, match_pr_to_task
+from services.matching import (
+    _create_proposal,
+    _fuzzy_title_match,
+    _is_rejected_pair,
+    match_issue_to_task,
+    match_pr_to_task,
+)
 
 WORKSPACE_ID = "ws-1"
 
@@ -48,7 +54,11 @@ async def test_pr_matches_via_closes_reference(fake_db):
         "number": 42,
         "title": "Add JWT refresh logic",
         "state": "open",
-        "linked_task_id": "task-1",
+    }).execute().data[0]
+    task = fake_db.table("tasks").insert({
+        "workspace_id": WORKSPACE_ID,
+        "title": "Implement JWT refresh",
+        "github_issue_id": issue["id"],
     }).execute().data[0]
 
     pr_row = fake_db.table("github_prs").insert({
@@ -61,9 +71,66 @@ async def test_pr_matches_via_closes_reference(fake_db):
     proposal = await match_pr_to_task(fake_db, WORKSPACE_ID, pr_row, gemini_key=None)
 
     assert proposal is not None
-    assert proposal["task_id"] == "task-1"
+    assert proposal["task_id"] == task["id"]
     assert proposal["similarity_score"] == 1.0
-    assert issue["number"] == 42
+
+
+@pytest.mark.asyncio
+async def test_pr_referencing_unlinked_issue_resurfaces_prior_accepted_task(fake_db):
+    """After a manual unlink, a new PR referencing the same issue should
+    surface the previously-linked task as a fresh pending proposal rather than
+    silently auto-relinking or dropping the reference."""
+    issue = fake_db.table("github_issues").insert({
+        "workspace_id": WORKSPACE_ID, "number": 42, "title": "Add JWT refresh logic", "state": "open",
+    }).execute().data[0]
+    task = fake_db.table("tasks").insert({
+        "workspace_id": WORKSPACE_ID, "title": "Implement JWT refresh",
+    }).execute().data[0]
+    fake_db.table("match_proposals").insert({
+        "workspace_id": WORKSPACE_ID, "task_id": task["id"], "github_issue_id": issue["id"],
+        "status": "accepted", "similarity_score": 1.0,
+    }).execute()
+
+    pr_row = fake_db.table("github_prs").insert({
+        "workspace_id": WORKSPACE_ID, "number": 56, "title": "Closes #42 - retry", "state": "open",
+    }).execute().data[0]
+
+    proposal = await match_pr_to_task(fake_db, WORKSPACE_ID, pr_row, gemini_key=None)
+
+    assert proposal is not None
+    assert proposal["task_id"] == task["id"]
+    assert proposal["status"] == "pending"
+
+
+def test_create_proposal_dedupes_pending_pair_for_same_issue():
+    from tests.fake_supabase import FakeSupabaseClient
+
+    fake_db = FakeSupabaseClient()
+    first = _create_proposal(fake_db, WORKSPACE_ID, "task-1", "issue-1", None, 0.8)
+    second = _create_proposal(fake_db, WORKSPACE_ID, "task-1", "issue-1", None, 0.95)
+
+    assert first["id"] == second["id"]
+    rows = fake_db.table("match_proposals").select("*").eq("workspace_id", WORKSPACE_ID).execute().data
+    assert len(rows) == 1
+    assert rows[0]["similarity_score"] == 0.95
+
+
+@pytest.mark.asyncio
+async def test_match_issue_to_task_dedupes_when_called_twice(fake_db):
+    """Simulates webhook + reconcile both discovering the same new issue and
+    both triggering matching -- should not produce duplicate pending proposals."""
+    fake_db.table("tasks").insert({
+        "workspace_id": WORKSPACE_ID, "title": "Add JWT refresh logic",
+    }).execute()
+    issue_row = fake_db.table("github_issues").insert({
+        "workspace_id": WORKSPACE_ID, "number": 1, "title": "Add JWT refresh logic", "state": "open",
+    }).execute().data[0]
+
+    await match_issue_to_task(fake_db, WORKSPACE_ID, issue_row, gemini_key=None)
+    await match_issue_to_task(fake_db, WORKSPACE_ID, issue_row, gemini_key=None)
+
+    proposals = fake_db.table("match_proposals").select("*").eq("workspace_id", WORKSPACE_ID).execute().data
+    assert len(proposals) == 1
 
 
 @pytest.mark.asyncio

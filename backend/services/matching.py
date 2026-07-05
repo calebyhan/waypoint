@@ -90,21 +90,47 @@ async def match_pr_to_task(
     gemini_key: str | None,
 ) -> dict | None:
     """Run the PR matching pipeline: issue-ref → semantic → fallback."""
-    pr_title = pr_row.get("title", "")
+    pr_text = f"{pr_row.get('title', '')}\n{pr_row.get('body', '') or ''}"
 
-    refs = re.findall(r"(?:fixes|closes|resolves)\s+#(\d+)", pr_title, re.IGNORECASE)
+    refs = re.findall(r"(?:fixes|closes|resolves)\s+#(\d+)", pr_text, re.IGNORECASE)
     for ref_num in refs:
         issue = (
             db.table("github_issues")
-            .select("linked_task_id")
+            .select("id")
             .eq("workspace_id", workspace_id)
             .eq("number", int(ref_num))
-            .single()
             .execute()
         )
-        if issue.data and issue.data.get("linked_task_id"):
+        if not issue.data:
+            continue
+        task = (
+            db.table("tasks")
+            .select("id")
+            .eq("workspace_id", workspace_id)
+            .eq("github_issue_id", issue.data[0]["id"])
+            .execute()
+        )
+        if task.data:
             return _create_proposal(
-                db, workspace_id, issue.data["linked_task_id"], None, pr_row["id"], 1.0,
+                db, workspace_id, task.data[0]["id"], None, pr_row["id"], 1.0,
+            )
+        # Issue exists but isn't currently linked to a task (e.g. manually
+        # unlinked after a prior PR was abandoned) -- surface the task it was
+        # previously linked to as a fresh proposal instead of dropping the
+        # reference entirely, so a human re-confirms the relink.
+        prior = (
+            db.table("match_proposals")
+            .select("task_id")
+            .eq("workspace_id", workspace_id)
+            .eq("github_issue_id", issue.data[0]["id"])
+            .eq("status", "accepted")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if prior.data:
+            return _create_proposal(
+                db, workspace_id, prior.data[0]["task_id"], None, pr_row["id"], 1.0,
             )
 
     tasks = db.table("tasks").select("id, title").eq("workspace_id", workspace_id).execute()
@@ -116,7 +142,7 @@ async def match_pr_to_task(
     for task in tasks.data:
         if _is_rejected_pair(db, workspace_id, task["id"], None, pr_row["id"]):
             continue
-        fuzzy = _fuzzy_title_match(pr_title, task["title"])
+        fuzzy = _fuzzy_title_match(pr_row.get("title", ""), task["title"])
         if fuzzy > best_score:
             best_score = fuzzy
             best_task_id = task["id"]
@@ -141,10 +167,11 @@ def _create_proposal(
         "similarity_score": score,
         "status": "pending",
     }
+    on_conflict = "workspace_id,task_id,github_issue_id" if issue_id else "workspace_id,task_id,github_pr_id"
     if issue_id:
         data["github_issue_id"] = issue_id
     if pr_id:
         data["github_pr_id"] = pr_id
 
-    result = db.table("match_proposals").insert(data).execute()
+    result = db.table("match_proposals").upsert(data, on_conflict=on_conflict).execute()
     return result.data[0]

@@ -74,6 +74,7 @@ class FakeQueryBuilder:
         self._limit = None
         self._single = False
         self._negate_next = False
+        self._on_conflict: list[str] | None = None
 
     def select(self, *_args, **_kwargs):
         self._op = self._op or "select"
@@ -87,6 +88,12 @@ class FakeQueryBuilder:
     def update(self, payload):
         self._op = "update"
         self._payload = payload
+        return self
+
+    def upsert(self, payload, on_conflict: str | None = None, **_kwargs):
+        self._op = "upsert"
+        self._payload = payload
+        self._on_conflict = [c.strip() for c in on_conflict.split(",")] if on_conflict else None
         return self
 
     def delete(self):
@@ -156,6 +163,26 @@ class FakeQueryBuilder:
                 rows.append(row)
                 created.append(deepcopy(row))
             return FakeResult(created)
+
+        if self._op == "upsert":
+            payloads = self._payload if isinstance(self._payload, list) else [self._payload]
+            saved = []
+            for payload in payloads:
+                match = None
+                if self._on_conflict:
+                    match = next(
+                        (r for r in rows if all(r.get(c) == payload.get(c) for c in self._on_conflict)),
+                        None,
+                    )
+                if match is not None:
+                    match.update(deepcopy(payload))
+                    saved.append(deepcopy(match))
+                else:
+                    row = {"id": str(uuid.uuid4()), "version": 1, "created_at": "2026-01-01T00:00:00Z"}
+                    row.update(deepcopy(payload))
+                    rows.append(row)
+                    saved.append(deepcopy(row))
+            return FakeResult(saved)
 
         if self._op == "update":
             matched = [r for r in rows if self._matches(r)]

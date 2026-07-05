@@ -1,6 +1,9 @@
 def seed_task(fake_db, workspace_id, **overrides):
     epic = fake_db.table("epics").insert({"workspace_id": workspace_id, "title": "Auth", "sort_order": 0}).execute().data[0]
-    row = {"workspace_id": workspace_id, "epic_id": epic["id"], "title": "Implement JWT login", "status": "open", "priority": "p0"}
+    row = {
+        "workspace_id": workspace_id, "epic_id": epic["id"], "title": "Implement JWT login",
+        "status": "open", "priority": "p0", "github_conflict": False,
+    }
     row.update(overrides)
     return fake_db.table("tasks").insert(row).execute().data[0]
 
@@ -23,12 +26,37 @@ def test_update_task_status_rejects_invalid_value(client, fake_db, workspace):
 
 
 def test_update_task_assignee(client, fake_db, workspace):
-    task = seed_task(fake_db, workspace["id"])
+    task = seed_task(fake_db, workspace["id"], version=1)
 
     res = client.patch(f"/workspaces/{workspace['id']}/tasks/{task['id']}/assignee", json={"assignee": "octocat"})
 
     assert res.status_code == 200
     assert res.json()["assignee"] == "octocat"
+    assert res.json()["version"] == 2
+
+
+def test_assignee_update_bumps_version_so_stale_edit_conflicts(client, fake_db, workspace):
+    task = seed_task(fake_db, workspace["id"], version=1)
+
+    client.patch(f"/workspaces/{workspace['id']}/tasks/{task['id']}/assignee", json={"assignee": "octocat"})
+    res = client.patch(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}",
+        json={"title": "Edited by human", "version": 1},
+    )
+
+    assert res.status_code == 409
+
+
+def test_schedule_update_bumps_version(client, fake_db, workspace):
+    task = seed_task(fake_db, workspace["id"], version=1)
+
+    res = client.patch(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}/schedule",
+        json={"start_date": "2026-01-01", "end_date": "2026-01-05"},
+    )
+
+    assert res.status_code == 200
+    assert res.json()["version"] == 2
 
 
 def test_accepting_issue_proposal_links_issue_to_task(client, fake_db, workspace):
@@ -45,8 +73,8 @@ def test_accepting_issue_proposal_links_issue_to_task(client, fake_db, workspace
 
     assert res.status_code == 200
     assert res.json()["status"] == "accepted"
-    updated_issue = fake_db.table("github_issues").select("*").eq("id", issue["id"]).single().execute().data
-    assert updated_issue["linked_task_id"] == task["id"]
+    updated_task = fake_db.table("tasks").select("*").eq("id", task["id"]).single().execute().data
+    assert updated_task["github_issue_id"] == issue["id"]
 
 
 def test_accepting_pr_proposal_sets_task_in_review(client, fake_db, workspace):
@@ -80,8 +108,90 @@ def test_rejecting_proposal_does_not_link(client, fake_db, workspace):
 
     assert res.status_code == 200
     assert res.json()["status"] == "rejected"
-    updated_issue = fake_db.table("github_issues").select("*").eq("id", issue["id"]).single().execute().data
-    assert updated_issue.get("linked_task_id") is None
+    updated_task = fake_db.table("tasks").select("*").eq("id", task["id"]).single().execute().data
+    assert updated_task.get("github_issue_id") is None
+
+
+def test_marking_task_done_while_linked_issue_open_flags_conflict(client, fake_db, workspace):
+    issue = fake_db.table("github_issues").insert({
+        "workspace_id": workspace["id"], "number": 7, "title": "Bug", "state": "open",
+    }).execute().data[0]
+    task = seed_task(fake_db, workspace["id"], github_issue_id=issue["id"])
+
+    res = client.patch(f"/workspaces/{workspace['id']}/tasks/{task['id']}/status", json={"status": "done"})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "done"
+    assert body["github_conflict"] is True
+    assert "#7" in body["github_conflict_reason"]
+
+
+def test_marking_task_done_with_issue_already_closed_does_not_flag(client, fake_db, workspace):
+    issue = fake_db.table("github_issues").insert({
+        "workspace_id": workspace["id"], "number": 8, "title": "Bug", "state": "closed",
+    }).execute().data[0]
+    task = seed_task(fake_db, workspace["id"], github_issue_id=issue["id"])
+
+    res = client.patch(f"/workspaces/{workspace['id']}/tasks/{task['id']}/status", json={"status": "done"})
+
+    assert res.status_code == 200
+    assert res.json()["github_conflict"] is False
+
+
+def test_unlink_issue_clears_task_pointer(client, fake_db, workspace):
+    issue = fake_db.table("github_issues").insert({
+        "workspace_id": workspace["id"], "number": 9, "title": "Bug", "state": "open",
+    }).execute().data[0]
+    task = seed_task(fake_db, workspace["id"], github_issue_id=issue["id"])
+
+    res = client.delete(f"/workspaces/{workspace['id']}/tasks/{task['id']}/github-link?kind=issue")
+
+    assert res.status_code == 200
+    updated = fake_db.table("tasks").select("*").eq("id", task["id"]).single().execute().data
+    assert updated["github_issue_id"] is None
+
+
+def test_unlink_pr_only_clears_that_pr(client, fake_db, workspace):
+    task = seed_task(fake_db, workspace["id"])
+    pr_a = fake_db.table("github_prs").insert({
+        "workspace_id": workspace["id"], "number": 1, "title": "PR A", "state": "open", "merged": False,
+        "linked_task_id": task["id"],
+    }).execute().data[0]
+    pr_b = fake_db.table("github_prs").insert({
+        "workspace_id": workspace["id"], "number": 2, "title": "PR B", "state": "open", "merged": False,
+        "linked_task_id": task["id"],
+    }).execute().data[0]
+
+    res = client.delete(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}/github-link?kind=pr&github_pr_id={pr_a['id']}"
+    )
+
+    assert res.status_code == 200
+    updated_a = fake_db.table("github_prs").select("*").eq("id", pr_a["id"]).single().execute().data
+    updated_b = fake_db.table("github_prs").select("*").eq("id", pr_b["id"]).single().execute().data
+    assert updated_a["linked_task_id"] is None
+    assert updated_b["linked_task_id"] == task["id"]
+
+
+def test_resolve_conflict_keep_github_reverts_status(client, fake_db, workspace):
+    issue = fake_db.table("github_issues").insert({
+        "workspace_id": workspace["id"], "number": 7, "title": "Bug", "state": "open",
+    }).execute().data[0]
+    task = seed_task(
+        fake_db, workspace["id"], github_issue_id=issue["id"], status="done",
+        github_conflict=True, github_conflict_reason="conflict",
+    )
+
+    res = client.post(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}/resolve-conflict",
+        json={"resolution": "keep_github"},
+    )
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "open"
+    assert body["github_conflict"] is False
 
 
 def test_dashboard_aggregates_epic_progress(client, fake_db, workspace):

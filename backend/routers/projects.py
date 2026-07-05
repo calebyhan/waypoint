@@ -6,6 +6,8 @@ from core.deps import get_current_user
 from core.supabase import get_supabase
 from services.ai import decompose_prd
 from services.diff import compute_plan_diff
+from services.github import get_github_token
+from services.github_writeback import create_issue_for_task, update_issue_for_task
 
 router = APIRouter(prefix="/workspaces/{workspace_id}", tags=["projects"])
 
@@ -75,6 +77,18 @@ def _assert_membership(db: Client, workspace_id: str, user_id: str):
     )
     if not result.data:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a workspace member")
+
+
+def _github_writeback_context(db: Client, workspace_id: str) -> tuple[dict, str] | None:
+    """Returns (workspace, token) if this workspace has a connected repo and a
+    usable GitHub token, else None -- callers should skip write-back silently."""
+    workspace = db.table("workspaces").select("*").eq("id", workspace_id).single().execute().data
+    if not workspace or not workspace.get("repo_owner"):
+        return None
+    token = get_github_token(db, workspace["owner_id"])
+    if not token:
+        return None
+    return workspace, token
 
 
 @router.get("/plan")
@@ -244,7 +258,15 @@ async def create_task(
     if body.end_date:
         insert_data["end_date"] = body.end_date
     result = db.table("tasks").insert(insert_data).execute()
-    return result.data[0]
+    task = result.data[0]
+
+    writeback = _github_writeback_context(db, workspace_id)
+    if writeback:
+        workspace, token = writeback
+        await create_issue_for_task(db, workspace, task, token)
+        task = db.table("tasks").select("*").eq("id", task["id"]).single().execute().data
+
+    return task
 
 
 @router.patch("/tasks/{task_id}")
@@ -271,7 +293,15 @@ async def update_task(
         updates["version"] = expected_version + 1
 
     result = db.table("tasks").update(updates).eq("id", task_id).execute()
-    return result.data[0] if result.data else None
+    task = result.data[0] if result.data else None
+
+    if task and task.get("github_issue_id") and ("title" in updates or "description" in updates):
+        writeback = _github_writeback_context(db, workspace_id)
+        if writeback:
+            workspace, token = writeback
+            await update_issue_for_task(db, workspace, task, token)
+
+    return task
 
 
 @router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)

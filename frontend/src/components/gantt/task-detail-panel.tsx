@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { X } from "lucide-react";
+import { ExternalLink, X } from "lucide-react";
 import type { GanttTask, GanttEpic } from "./gantt-types";
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -34,6 +34,8 @@ interface TaskDetailPanelProps {
   onStatusChange: (taskId: string, status: string) => void;
   onAssigneeChange: (taskId: string, assignee: string) => void;
   onScheduleChange: (taskId: string, startDate: string, endDate: string) => void;
+  onUnlinkGithub?: (taskId: string, kind: "issue" | "pr", githubPrId?: string) => void;
+  onResolveConflict?: (taskId: string, resolution: "keep_waypoint" | "keep_github") => void;
 }
 
 export function TaskDetailPanel({
@@ -44,6 +46,8 @@ export function TaskDetailPanel({
   onStatusChange,
   onAssigneeChange,
   onScheduleChange,
+  onUnlinkGithub,
+  onResolveConflict,
 }: TaskDetailPanelProps) {
   const depTitleMap = new Map<string, string>();
   if (allTasks) {
@@ -60,6 +64,82 @@ export function TaskDetailPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {task.github_conflict && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 space-y-2">
+            <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+              {task.github_conflict_reason ?? "This task conflicts with its linked GitHub issue."}
+            </p>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={() => onResolveConflict?.(task.id, "keep_waypoint")}>
+                Keep Waypoint
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => onResolveConflict?.(task.id, "keep_github")}>
+                Keep GitHub
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {task.github_sync_error && (
+          <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
+            <p className="text-xs font-medium text-red-700 dark:text-red-400">
+              Failed to sync to GitHub: {task.github_sync_error}
+            </p>
+          </div>
+        )}
+
+        {(task.github_issue || (task.github_prs && task.github_prs.length > 0)) && (
+          <div>
+            <Label className="text-xs text-muted-foreground">Linked GitHub</Label>
+            <div className="mt-1 space-y-1.5">
+              {task.github_issue && (
+                <div className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1.5">
+                  <a
+                    href={task.github_issue.html_url ?? undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex min-w-0 items-center gap-1.5 text-sm hover:underline"
+                  >
+                    <span className="shrink-0 text-muted-foreground">#{task.github_issue.number}</span>
+                    <span className="truncate">{task.github_issue.title}</span>
+                    <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
+                  </a>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-2 text-xs"
+                    onClick={() => onUnlinkGithub?.(task.id, "issue")}
+                  >
+                    Unlink
+                  </Button>
+                </div>
+              )}
+              {task.github_prs?.map((pr) => (
+                <div key={pr.id} className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1.5">
+                  <a
+                    href={pr.html_url ?? undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex min-w-0 items-center gap-1.5 text-sm hover:underline"
+                  >
+                    <span className="shrink-0 text-muted-foreground">#{pr.number}</span>
+                    <span className="truncate">{pr.title}</span>
+                    <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
+                  </a>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-2 text-xs"
+                    onClick={() => onUnlinkGithub?.(task.id, "pr", pr.id)}
+                  >
+                    Unlink
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {epic && (
           <div>
             <Label className="text-xs text-muted-foreground">Epic</Label>

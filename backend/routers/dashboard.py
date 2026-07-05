@@ -6,6 +6,9 @@ from supabase import Client
 
 from core.deps import get_current_user
 from core.supabase import get_supabase
+from services.github import get_github_token
+from services.github_sync import bump_task
+from services.github_writeback import sync_task_status_to_github
 from services.insights import generate_insights
 from services.scheduling import schedule_tasks
 
@@ -46,8 +49,11 @@ async def get_dashboard(
         .data
     )
 
-    issue_by_task = {i["linked_task_id"]: i for i in issues if i.get("linked_task_id")}
-    pr_by_task = {p["linked_task_id"]: p for p in prs if p.get("linked_task_id")}
+    issue_by_id = {i["id"]: i for i in issues}
+    pr_by_task: dict[str, list[dict]] = {}
+    for p in prs:
+        if p.get("linked_task_id"):
+            pr_by_task.setdefault(p["linked_task_id"], []).append(p)
 
     epic_progress = []
     for epic in epics:
@@ -60,15 +66,16 @@ async def get_dashboard(
             "progress_pct": round(done_count / len(epic_tasks) * 100) if epic_tasks else 0,
         })
 
+    linked_issue_ids = {task["github_issue_id"] for task in tasks if task.get("github_issue_id")}
     enriched_tasks = []
     for task in tasks:
         enriched_tasks.append({
             **task,
-            "linked_issue": issue_by_task.get(task["id"]),
-            "linked_pr": pr_by_task.get(task["id"]),
+            "linked_issue": issue_by_id.get(task.get("github_issue_id")),
+            "linked_prs": pr_by_task.get(task["id"], []),
         })
 
-    unlinked_issues = [i for i in issues if not i.get("linked_task_id")]
+    unlinked_issues = [i for i in issues if i["id"] not in linked_issue_ids]
     unlinked_prs = [p for p in prs if not p.get("linked_task_id")]
 
     return {
@@ -105,8 +112,37 @@ async def update_task_status(
     _assert_membership(db, workspace_id, user["id"])
     if body.status not in ("open", "in_review", "done"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
-    result = db.table("tasks").update({"status": body.status}).eq("id", task_id).execute()
-    return result.data[0] if result.data else None
+
+    before = db.table("tasks").select("status, github_issue_id").eq("id", task_id).single().execute().data
+    task = bump_task(db, task_id, {"status": body.status})
+
+    if task and before and task.get("github_issue_id"):
+        crossed_done = body.status == "done" and before["status"] != "done"
+        crossed_open = before["status"] == "done" and body.status != "done"
+
+        if crossed_done:
+            # Waypoint-initiated "done" -- check the linked issue's *current*
+            # cached state directly rather than via recompute_task_done_state,
+            # since that function always lets GitHub's state win and would
+            # silently revert this back to open. This is the one real
+            # collision case (decision 2): flag it, don't auto-resolve either way.
+            issue = db.table("github_issues").select("*").eq("id", task["github_issue_id"]).single().execute().data
+            if issue and issue["state"] == "open":
+                reason = f"Task marked done but linked issue #{issue['number']} is open on GitHub"
+                task = bump_task(db, task_id, {"github_conflict": True, "github_conflict_reason": reason})
+            else:
+                workspace = db.table("workspaces").select("*").eq("id", workspace_id).single().execute().data
+                token = get_github_token(db, workspace["owner_id"]) if workspace else None
+                if workspace and workspace.get("repo_owner") and token:
+                    await sync_task_status_to_github(db, workspace, task, token, close=True)
+        elif crossed_open:
+            # Waypoint-initiated reversal out of done -- unambiguous, just push it.
+            workspace = db.table("workspaces").select("*").eq("id", workspace_id).single().execute().data
+            token = get_github_token(db, workspace["owner_id"]) if workspace else None
+            if workspace and workspace.get("repo_owner") and token:
+                await sync_task_status_to_github(db, workspace, task, token, close=False)
+
+    return task
 
 
 class AssigneeUpdate(BaseModel):
@@ -122,8 +158,7 @@ async def update_task_assignee(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
-    result = db.table("tasks").update({"assignee": body.assignee}).eq("id", task_id).execute()
-    return result.data[0] if result.data else None
+    return bump_task(db, task_id, {"assignee": body.assignee})
 
 
 class ScheduleUpdate(BaseModel):
@@ -144,8 +179,7 @@ async def update_task_schedule(
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
-    result = db.table("tasks").update(updates).eq("id", task_id).execute()
-    return result.data[0] if result.data else None
+    return bump_task(db, task_id, updates)
 
 
 class ProposalDecision(BaseModel):
@@ -172,16 +206,75 @@ async def decide_match_proposal(
 
     if body.accept:
         if proposal.data.get("github_issue_id"):
-            db.table("github_issues").update({"linked_task_id": proposal.data["task_id"]}).eq(
-                "id", proposal.data["github_issue_id"]
-            ).execute()
+            bump_task(db, proposal.data["task_id"], {"github_issue_id": proposal.data["github_issue_id"]})
         if proposal.data.get("github_pr_id"):
             db.table("github_prs").update({"linked_task_id": proposal.data["task_id"]}).eq(
                 "id", proposal.data["github_pr_id"]
             ).execute()
-            db.table("tasks").update({"status": "in_review"}).eq("id", proposal.data["task_id"]).execute()
+            bump_task(db, proposal.data["task_id"], {"status": "in_review"})
 
     return {"status": new_status}
+
+
+@router.delete("/tasks/{task_id}/github-link")
+async def unlink_task_github(
+    workspace_id: str,
+    task_id: str,
+    kind: str,
+    github_pr_id: str | None = None,
+    user: dict = Depends(get_current_user),
+    db: Client = Depends(get_supabase),
+):
+    """Manually sever a task<->GitHub link. Never touches GitHub itself -- the
+    issue/PR stays as-is upstream; this only clears Waypoint's pointer so a
+    human can re-match later."""
+    _assert_membership(db, workspace_id, user["id"])
+
+    if kind == "issue":
+        bump_task(db, task_id, {"github_issue_id": None})
+    elif kind == "pr":
+        if not github_pr_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="github_pr_id required")
+        db.table("github_prs").update({"linked_task_id": None}).eq("id", github_pr_id).execute()
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="kind must be 'issue' or 'pr'")
+
+    return {"status": "unlinked"}
+
+
+class ConflictResolution(BaseModel):
+    resolution: str
+
+
+@router.post("/tasks/{task_id}/resolve-conflict")
+async def resolve_conflict(
+    workspace_id: str,
+    task_id: str,
+    body: ConflictResolution,
+    user: dict = Depends(get_current_user),
+    db: Client = Depends(get_supabase),
+):
+    """Resolve a flagged github_conflict: keep_waypoint re-pushes Waypoint's
+    status to GitHub; keep_github reverts the task's status to match GitHub."""
+    _assert_membership(db, workspace_id, user["id"])
+    if body.resolution not in ("keep_waypoint", "keep_github"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid resolution")
+
+    task = db.table("tasks").select("*").eq("id", task_id).single().execute().data
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+
+    if body.resolution == "keep_github":
+        bump_task(db, task_id, {"status": "open", "github_conflict": False, "github_conflict_reason": None})
+    else:
+        bump_task(db, task_id, {"github_conflict": False, "github_conflict_reason": None})
+        if task.get("github_issue_id"):
+            workspace = db.table("workspaces").select("*").eq("id", workspace_id).single().execute().data
+            token = get_github_token(db, workspace["owner_id"]) if workspace else None
+            if workspace and workspace.get("repo_owner") and token:
+                await sync_task_status_to_github(db, workspace, task, token, close=True)
+
+    return db.table("tasks").select("*").eq("id", task_id).single().execute().data
 
 
 class RescheduleRequest(BaseModel):

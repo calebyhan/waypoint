@@ -9,6 +9,24 @@ const PRIORITY_COLORS: Record<string, string> = {
   p2: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
 };
 
+function GithubBadge({ number, state, href }: { number: number; state: string; href?: string | null }) {
+  const isOpen = state === "open";
+  const badge = (
+    <Badge
+      variant="outline"
+      className={isOpen ? "border-green-600/40 text-green-700 dark:text-green-400" : "border-purple-600/40 text-purple-700 dark:text-purple-400"}
+    >
+      #{number}
+    </Badge>
+  );
+  if (!href) return badge;
+  return (
+    <a href={href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+      {badge}
+    </a>
+  );
+}
+
 interface KanbanCardProps {
   task: GanttTask;
   epicTitle?: string;
@@ -46,6 +64,16 @@ export function KanbanCard({
             {epicTitle}
           </Badge>
         )}
+        {task.github_issue && (
+          <GithubBadge
+            number={task.github_issue.number}
+            state={task.github_issue.state}
+            href={task.github_issue.html_url}
+          />
+        )}
+        {task.github_prs?.map((pr) => (
+          <GithubBadge key={pr.id} number={pr.number} state={pr.merged ? "merged" : pr.state} href={pr.html_url} />
+        ))}
       </div>
       <p className="truncate text-xs text-muted-foreground">
         {task.assignee ?? "Unassigned"}

@@ -46,6 +46,53 @@ async def validate_repo(owner: str, name: str, access_token: str) -> bool:
         return resp.status_code == 200
 
 
+async def create_issue(access_token: str, owner: str, name: str, title: str, body: str | None) -> dict:
+    """POST /repos/{owner}/{name}/issues. Returns the created issue JSON."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(
+            f"{GITHUB_API}/repos/{owner}/{name}/issues",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github+json",
+            },
+            json={"title": title, "body": body},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def update_issue(
+    access_token: str,
+    owner: str,
+    name: str,
+    issue_number: int,
+    *,
+    title: str | None = None,
+    body: str | None = None,
+    state: str | None = None,
+) -> dict:
+    """PATCH /repos/{owner}/{name}/issues/{issue_number}. Only sends provided fields."""
+    payload = {}
+    if title is not None:
+        payload["title"] = title
+    if body is not None:
+        payload["body"] = body
+    if state is not None:
+        payload["state"] = state
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.patch(
+            f"{GITHUB_API}/repos/{owner}/{name}/issues/{issue_number}",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github+json",
+            },
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 def get_github_token(db, user_id: str) -> str | None:
     """Retrieve the user's stored GitHub OAuth token.
 
