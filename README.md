@@ -7,12 +7,12 @@ AI-powered project management for small engineering teams (2-10 people). Drop in
 1. PM pastes a PRD or rough notes
 2. AI proposes epics and PR-sized tasks
 3. PM edits and approves the plan
-4. Waypoint tracks progress by listening to GitHub issues and PRs (read-only)
+4. Waypoint tracks progress by listening to GitHub issues and PRs, and syncs task changes back to GitHub -- creating issues for tasks, pushing title/description edits, and closing/reopening issues when task status changes
 
 ## Core Principles
 
-- **Propose, don't act** -- the agent proposes, the PM approves
-- **GitHub is the source of truth** -- Waypoint reads and listens, never writes
+- **Propose, don't act** -- the agent proposes (plans, issue/PR matches), the PM approves
+- **Bidirectional GitHub sync** -- GitHub is the source of truth for issue/PR state; Waypoint reconciles GitHub activity into the plan and writes task changes back to the linked issues (create, edit, close/reopen). It never touches PRs or milestones.
 - **Free to use** -- built on free-tier infrastructure
 
 ## Tech Stack

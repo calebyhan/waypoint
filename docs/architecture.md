@@ -19,8 +19,14 @@
 |---|---|
 | Framework | FastAPI (Python) |
 | Validation | Pydantic |
-| Background jobs | TBD |
+| Background jobs | APScheduler (in-process `AsyncIOScheduler`, started in `main.py`'s lifespan) |
 | Deployment | TBD |
+
+Scheduled jobs (`backend/core/scheduler.py`):
+
+- Reconciliation poll -- every 15 min
+- Insight generation -- every 24 h
+- GitHub write-back outbox drain -- every 2 min
 
 ### Data
 
@@ -38,6 +44,7 @@
 | Gemini Embedding 2 | Task embeddings (1K RPD per key) |
 | GitHub OAuth | Auth + repo access |
 | GitHub Webhooks | Issue/PR event listening |
+| GitHub REST API | Issue read + write-back (create/edit/close/reopen issues linked to tasks) |
 
 ## System Diagram
 
@@ -47,8 +54,9 @@ User (Next.js)
   ├── API calls ──────────→ Backend API
   │                           ├── Supabase (DB + pgvector)
   │                           ├── Gemini API (AI calls)
-  │                           ├── GitHub API (read only)
-  │                           └── Background jobs (reconciliation polling)
+  │                           ├── GitHub API (read + issue write-back)
+  │                           └── Background jobs (reconciliation, insights,
+  │                                 write-back outbox drain)
   │
   ├── Real-time updates ←── Supabase real-time subscriptions
   │
@@ -68,13 +76,24 @@ waypoint/
 └── backend/                # FastAPI
     ├── main.py
     ├── routers/
+    │   ├── auth.py
+    │   ├── dashboard.py
     │   ├── ingest.py
     │   ├── projects.py
     │   ├── webhooks.py
-    │   └── dashboard.py
+    │   └── workspaces.py
     ├── services/
     │   ├── ai.py
+    │   ├── diff.py
+    │   ├── github.py
+    │   ├── github_sync.py
+    │   ├── github_writeback.py
+    │   ├── insights.py
     │   ├── matching.py
-    │   └── github.py
-    └── models/
+    │   ├── pdf.py
+    │   ├── reconcile.py
+    │   └── scheduling.py
+    ├── models/
+    │   └── decomposition.py
+    └── core/
 ```

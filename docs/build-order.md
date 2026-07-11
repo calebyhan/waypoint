@@ -14,9 +14,9 @@
 
 ## Out of Scope (v1)
 
-- Creating or modifying GitHub issues, PRs, or milestones
+- Creating or modifying GitHub pull requests or milestones (issue write-back for Waypoint-managed tasks IS in scope -- Waypoint creates, edits, and closes/reopens the issues linked to its tasks; see `docs/github-integration.md`)
 - Importing existing projects or repos
-- Developer-facing login or views
+- A dedicated developer-facing product surface (developers and stakeholders CAN log in when invited as workspace members with the `member` role -- see `docs/data-model.md` -- but there is no separate developer UI)
 - Slack or other integrations
 - Mobile app
 - Linear, Jira, or Notion support

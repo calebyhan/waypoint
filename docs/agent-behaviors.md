@@ -7,11 +7,11 @@
 | PRD uploaded | Decompose into epics + PR-sized tasks |
 | Ambiguous scope | Ask clarifying question (max 3) |
 | GitHub issue created | Run matching pipeline, propose link to PM |
-| PR opened referencing an issue | Update task status to `in_review` |
+| PR opened referencing an issue | Propose issue/PR-to-task link; update task status to `in_review` only after PM accepts the proposal |
 | PR merged + issue closed | Mark task as `done` |
 | Task open >3 days with no PR | Surface as blocker on dashboard |
 | PRD re-ingested | Diff against existing plan, propose changes |
-| Scope gap detected | Propose new tasks, require PM approval |
+| Scope gap detected *(planned, not yet implemented)* | Propose new tasks, require PM approval |
 | Reconciliation poll (every 15 min) | Read GitHub issues/PRs, reconcile missed webhook events |
 | Partial done signal | Surface warning to PM, allow manual override |
 
@@ -23,6 +23,10 @@ The dashboard includes an agent insight strip that surfaces actionable warnings,
 - **Dependency violations** -- tasks in progress whose dependencies aren't done
 - **Stale PRs** -- PRs open for an extended period without merging
 - **Unassigned tasks** -- tasks with no assignee
+- **Partial done signals** -- tasks whose GitHub signals disagree (e.g., PR merged but issue still open)
+
+### Planned / Not Yet Implemented
+
 - **Scope gaps** -- areas of the PRD not covered by any task
 
 ## PRD Re-ingestion
@@ -39,4 +43,4 @@ For modified tasks already linked to a GitHub issue, the agent flags specificall
 
 > _"Task 'JWT refresh' changed scope -- it's linked to issue #42. The issue description may be outdated."_
 
-The PM updates the GitHub issue manually in their own workflow. Waypoint never writes to GitHub.
+Waypoint does not rewrite issue descriptions from a re-ingestion diff -- the PM updates the issue's substance in their own workflow, or edits the linked task directly in Waypoint, which pushes the new title/description to the GitHub issue via the write-back path (see `docs/github-integration.md#write-back-behavior`).
