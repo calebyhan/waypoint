@@ -22,7 +22,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { useSession } from "@/hooks/use-session";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
+import { reconnectGithub } from "@/lib/reconnect-github";
 import { toast } from "sonner";
 import { Plus, Trash2 } from "lucide-react";
 
@@ -72,12 +73,27 @@ export default function WorkspaceSetupPage() {
     enabled: !!session,
   });
 
-  const { data: repos = [], isLoading: reposLoading } = useQuery<Repo[]>({
+  const {
+    data: repos = [],
+    isLoading: reposLoading,
+    error: reposError,
+  } = useQuery<Repo[], ApiError>({
     queryKey: ["repos", id],
     queryFn: () =>
       apiFetch(`/workspaces/${id}/repos`, { token: session!.access_token }),
     enabled: !!session,
+    retry: false,
   });
+
+  const [reconnecting, setReconnecting] = useState(false);
+  const handleReconnect = async () => {
+    setReconnecting(true);
+    const error = await reconnectGithub(window.location.pathname);
+    if (error) {
+      toast.error("Failed to start GitHub reconnect");
+      setReconnecting(false);
+    }
+  };
 
   const { data: existingTeam } = useQuery<TeamMember[]>({
     queryKey: ["team", id],
@@ -181,6 +197,15 @@ export default function WorkspaceSetupPage() {
                 {workspace.repo_owner}/{workspace.repo_name}
               </span>
             </p>
+          ) : reposError ? (
+            <div className="space-y-3">
+              <p className="text-sm text-destructive">
+                {reposError.detail || "Couldn't load your GitHub repositories."}
+              </p>
+              <Button onClick={handleReconnect} disabled={reconnecting}>
+                {reconnecting ? "Redirecting to GitHub..." : "Reconnect GitHub"}
+              </Button>
+            </div>
           ) : (
             <>
               <Select

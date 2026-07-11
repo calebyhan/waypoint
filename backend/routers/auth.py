@@ -64,6 +64,7 @@ async def auth_callback(
     if existing.data:
         if body.github_token:
             db.table("profiles").update({"github_token": encrypt(body.github_token)}).eq("id", user["id"]).execute()
+        _resolve_pending_invites(db, user)
         return {"status": "existing", "profile_id": user["id"]}
 
     user_meta = user.get("user_metadata", {})
@@ -73,4 +74,31 @@ async def auth_callback(
         "avatar_url": user_meta.get("avatar_url"),
         "github_token": encrypt(body.github_token) if body.github_token else None,
     }).execute()
+    _resolve_pending_invites(db, user)
     return {"status": "created", "profile_id": user["id"]}
+
+
+def _resolve_pending_invites(db: Client, user: dict) -> None:
+    """Auto-accept any pending workspace invites addressed to this user's GitHub username."""
+    user_meta = user.get("user_metadata", {})
+    github_username = user_meta.get("user_name", user_meta.get("preferred_username", "")).lower()
+    if not github_username:
+        return
+
+    pending = (
+        db.table("workspace_invites")
+        .select("*")
+        .eq("github_username", github_username)
+        .eq("status", "pending")
+        .execute()
+    )
+    for invite in pending.data:
+        db.table("workspace_members").upsert(
+            {
+                "workspace_id": invite["workspace_id"],
+                "user_id": user["id"],
+                "role": invite["role"],
+            },
+            on_conflict="workspace_id,user_id",
+        ).execute()
+        db.table("workspace_invites").update({"status": "accepted"}).eq("id", invite["id"]).execute()

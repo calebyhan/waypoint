@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { useSession } from "@/hooks/use-session";
 import { apiFetch } from "@/lib/api";
+import { reconnectGithub } from "@/lib/reconnect-github";
 import { toast } from "sonner";
 
 interface Profile {
@@ -29,6 +30,16 @@ export default function SettingsPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [editedKey, setEditedKey] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+
+  const handleReconnect = async () => {
+    setReconnecting(true);
+    const error = await reconnectGithub("/settings");
+    if (error) {
+      toast.error("Failed to start GitHub reconnect");
+      setReconnecting(false);
+    }
+  };
 
   const { data: profile, isLoading } = useQuery<Profile>({
     queryKey: ["profile"],
@@ -73,15 +84,25 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle>Profile</CardTitle>
         </CardHeader>
-        <CardContent className="flex items-center gap-3">
-          {profile?.avatar_url && (
-            <img
-              src={profile.avatar_url}
-              alt={profile.github_username}
-              className="h-10 w-10 rounded-full"
-            />
-          )}
-          <span className="font-medium">{profile?.github_username}</span>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-3">
+            {profile?.avatar_url && (
+              <img
+                src={profile.avatar_url}
+                alt={profile.github_username}
+                className="h-10 w-10 rounded-full"
+              />
+            )}
+            <span className="font-medium">{profile?.github_username}</span>
+          </div>
+          <div>
+            <Button variant="outline" size="sm" onClick={handleReconnect} disabled={reconnecting}>
+              {reconnecting ? "Redirecting to GitHub..." : "Reconnect GitHub"}
+            </Button>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Use this if repo lists or GitHub sync stop working — your access token may have expired or been revoked.
+            </p>
+          </div>
         </CardContent>
       </Card>
 

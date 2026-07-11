@@ -6,6 +6,8 @@ os.environ.setdefault("GITHUB_CLIENT_ID", "placeholder")
 os.environ.setdefault("GITHUB_CLIENT_SECRET", "placeholder")
 os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "mn6gmCBhY3YI57T6RsMdCjS7jOJDgEb5S0DQj8Fhz8w=")
 
+from contextlib import contextmanager
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,6 +16,7 @@ from core.supabase import get_supabase
 from tests.fake_supabase import FakeSupabaseClient
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
+OTHER_USER_ID = "22222222-2222-2222-2222-222222222222"
 TOKEN = "test-token"
 
 
@@ -41,6 +44,22 @@ def auth_headers():
 
 
 @pytest.fixture
+def as_user(client):
+    """Temporarily act as a different user_id for the duration of a `with` block."""
+    from main import app
+
+    @contextmanager
+    def _as_user(user_id: str, user_metadata: dict | None = None):
+        app.dependency_overrides[get_current_user] = lambda: {"id": user_id, "user_metadata": user_metadata or {}}
+        try:
+            yield
+        finally:
+            app.dependency_overrides[get_current_user] = lambda: {"id": USER_ID, "user_metadata": {}}
+
+    return _as_user
+
+
+@pytest.fixture
 def workspace(fake_db):
     """A workspace owned by USER_ID, with USER_ID already a member."""
     ws = fake_db.table("workspaces").insert({
@@ -52,5 +71,6 @@ def workspace(fake_db):
     fake_db.table("workspace_members").insert({
         "workspace_id": ws["id"],
         "user_id": USER_ID,
+        "role": "owner",
     }).execute()
     return ws

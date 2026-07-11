@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, RefreshCw, AlertTriangle, FileText } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, RefreshCw, AlertTriangle, FileText, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -60,7 +60,24 @@ interface TeamMember {
   name: string;
   role: string;
   weekly_capacity_hours: number;
+  user_id?: string | null;
 }
+
+interface Member {
+  user_id: string;
+  role: "owner" | "pm" | "member";
+  github_username: string | null;
+  avatar_url: string | null;
+}
+
+interface Invite {
+  id: string;
+  github_username: string;
+  role: "pm" | "member";
+  status: string;
+}
+
+const UNLINKED = "__unlinked__";
 
 export default function SettingsPage() {
   const { id } = useParams<{ id: string }>();
@@ -77,6 +94,9 @@ export default function SettingsPage() {
   const [assignDay, setAssignDay] = useState(-1);
   const [scheduleDirty, setScheduleDirty] = useState(false);
 
+  const [inviteUsername, setInviteUsername] = useState("");
+  const [inviteRole, setInviteRole] = useState<"pm" | "member">("member");
+
   const { data: workspace, isLoading: wsLoading } = useQuery<Workspace>({
     queryKey: ["workspace", id],
     queryFn: () => apiFetch(`/workspaces/${id}`, { token: session!.access_token }),
@@ -87,6 +107,21 @@ export default function SettingsPage() {
     queryKey: ["team", id],
     queryFn: () => apiFetch(`/workspaces/${id}/team`, { token: session!.access_token }),
     enabled: !!session,
+  });
+
+  const { data: members } = useQuery<Member[]>({
+    queryKey: ["members", id],
+    queryFn: () => apiFetch(`/workspaces/${id}/members`, { token: session!.access_token }),
+    enabled: !!session,
+  });
+
+  const myRole = members?.find((m) => m.user_id === session?.user.id)?.role ?? "member";
+  const canManage = myRole === "owner" || myRole === "pm";
+
+  const { data: invites } = useQuery<Invite[]>({
+    queryKey: ["invites", id],
+    queryFn: () => apiFetch(`/workspaces/${id}/invites`, { token: session!.access_token }),
+    enabled: !!session && canManage,
   });
 
   useEffect(() => {
@@ -135,6 +170,7 @@ export default function SettingsPage() {
               name: m.name,
               role: m.role,
               weekly_capacity_hours: m.weekly_capacity_hours,
+              user_id: m.user_id ?? null,
             })),
         }),
       }),
@@ -144,6 +180,73 @@ export default function SettingsPage() {
       toast.success("Team saved");
     },
     onError: () => toast.error("Failed to save team"),
+  });
+
+  const inviteMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/workspaces/${id}/invites`, {
+        method: "POST",
+        token: session!.access_token,
+        body: JSON.stringify({ github_username: inviteUsername.trim(), role: inviteRole }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["invites", id] });
+      setInviteUsername("");
+      toast.success("Invite sent");
+    },
+    onError: () => toast.error("Failed to create invite"),
+  });
+
+  const revokeInviteMutation = useMutation({
+    mutationFn: (inviteId: string) =>
+      apiFetch(`/workspaces/${id}/invites/${inviteId}`, {
+        method: "DELETE",
+        token: session!.access_token,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["invites", id] });
+      toast.success("Invite revoked");
+    },
+  });
+
+  const updateRoleMutation = useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: "pm" | "member" }) =>
+      apiFetch(`/workspaces/${id}/members/${userId}`, {
+        method: "PATCH",
+        token: session!.access_token,
+        body: JSON.stringify({ role }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["members", id] });
+      toast.success("Role updated");
+    },
+    onError: () => toast.error("Failed to update role"),
+  });
+
+  const removeMemberMutation = useMutation({
+    mutationFn: (userId: string) =>
+      apiFetch(`/workspaces/${id}/members/${userId}`, {
+        method: "DELETE",
+        token: session!.access_token,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["members", id] });
+      toast.success("Member removed");
+    },
+  });
+
+  const linkTeamMemberMutation = useMutation({
+    mutationFn: ({ memberId, userId }: { memberId: string; userId: string | null }) =>
+      apiFetch(`/workspaces/${id}/team/${memberId}/link`, {
+        method: "POST",
+        token: session!.access_token,
+        body: JSON.stringify({ user_id: userId }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["team", id] });
+      toast.success("Linked to account");
+    },
+    onError: () => toast.error("Failed to link account"),
   });
 
   const rescheduleMutation = useMutation({
@@ -244,10 +347,12 @@ export default function SettingsPage() {
                     id="ws-name"
                     value={workspaceName}
                     onChange={(e) => setWorkspaceName(e.target.value)}
+                    disabled={!canManage}
                   />
                   <Button
                     onClick={() => renameMutation.mutate()}
                     disabled={
+                      !canManage ||
                       !workspaceName.trim() ||
                       workspaceName === workspace?.name ||
                       renameMutation.isPending
@@ -268,6 +373,101 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
 
+          {/* Members */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Members</CardTitle>
+              <CardDescription>
+                People with access to this workspace and their permission level
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {members?.map((m) => (
+                <div key={m.user_id} className="flex items-center gap-2">
+                  <span className="flex-1 truncate text-sm">
+                    {m.github_username ?? m.user_id}
+                  </span>
+                  {m.role === "owner" ? (
+                    <span className="w-32 text-sm text-muted-foreground">Owner</span>
+                  ) : (
+                    <Select
+                      value={m.role}
+                      onValueChange={(v) =>
+                        v && canManage && updateRoleMutation.mutate({ userId: m.user_id, role: v as "pm" | "member" })
+                      }
+                      disabled={!canManage}
+                    >
+                      <SelectTrigger className="w-32">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pm">PM</SelectItem>
+                        <SelectItem value="member">Member</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                  {canManage && m.role !== "owner" && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => removeMemberMutation.mutate(m.user_id)}
+                    >
+                      <X className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                  )}
+                </div>
+              ))}
+
+              {canManage && (
+                <>
+                  <div className="flex gap-2 pt-2">
+                    <Input
+                      placeholder="GitHub username"
+                      value={inviteUsername}
+                      onChange={(e) => setInviteUsername(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Select value={inviteRole} onValueChange={(v) => v && setInviteRole(v as "pm" | "member")}>
+                      <SelectTrigger className="w-32">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pm">PM</SelectItem>
+                        <SelectItem value="member">Member</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      onClick={() => inviteMutation.mutate()}
+                      disabled={!inviteUsername.trim() || inviteMutation.isPending}
+                    >
+                      <UserPlus className="mr-1.5 h-3.5 w-3.5" />
+                      Invite
+                    </Button>
+                  </div>
+
+                  {invites && invites.length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      {invites.map((inv) => (
+                        <div key={inv.id} className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <span className="flex-1">
+                            {inv.github_username} · invited as {inv.role} · pending
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => revokeInviteMutation.mutate(inv.id)}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Team Members */}
           <Card>
             <CardHeader>
@@ -284,10 +484,12 @@ export default function SettingsPage() {
                     value={member.name}
                     onChange={(e) => updateMember(i, "name", e.target.value)}
                     className="flex-1"
+                    disabled={!canManage}
                   />
                   <Select
                     value={member.role}
                     onValueChange={(v) => v && updateMember(i, "role", v)}
+                    disabled={!canManage}
                   >
                     <SelectTrigger className="w-32">
                       <SelectValue />
@@ -306,31 +508,59 @@ export default function SettingsPage() {
                     onChange={(e) => updateMember(i, "weekly_capacity_hours", parseInt(e.target.value) || 0)}
                     className="w-20"
                     title="Weekly hours"
+                    disabled={!canManage}
                   />
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => removeMember(i)}
-                  >
-                    <Trash2 className="h-4 w-4 text-muted-foreground" />
-                  </Button>
+                  {member.id && canManage && (
+                    <Select
+                      value={member.user_id ?? UNLINKED}
+                      onValueChange={(v) =>
+                        linkTeamMemberMutation.mutate({
+                          memberId: member.id!,
+                          userId: v === UNLINKED ? null : v,
+                        })
+                      }
+                    >
+                      <SelectTrigger className="w-40" title="Link to account">
+                        <SelectValue placeholder="Link to account" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={UNLINKED}>Not linked</SelectItem>
+                        {members?.map((m) => (
+                          <SelectItem key={m.user_id} value={m.user_id}>
+                            {m.github_username ?? m.user_id}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  {canManage && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => removeMember(i)}
+                    >
+                      <Trash2 className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                  )}
                 </div>
               ))}
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={addMember}>
-                  <Plus className="mr-1.5 h-3.5 w-3.5" />
-                  Add Member
-                </Button>
-                {teamDirty && (
-                  <Button
-                    size="sm"
-                    onClick={() => teamSyncMutation.mutate()}
-                    disabled={teamSyncMutation.isPending}
-                  >
-                    {teamSyncMutation.isPending ? "Saving..." : "Save Team"}
+              {canManage && (
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={addMember}>
+                    <Plus className="mr-1.5 h-3.5 w-3.5" />
+                    Add Member
                   </Button>
-                )}
-              </div>
+                  {teamDirty && (
+                    <Button
+                      size="sm"
+                      onClick={() => teamSyncMutation.mutate()}
+                      disabled={teamSyncMutation.isPending}
+                    >
+                      {teamSyncMutation.isPending ? "Saving..." : "Save Team"}
+                    </Button>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -441,7 +671,7 @@ export default function SettingsPage() {
                   onClick={() => {
                     if (confirm("Archive this workspace?")) archiveMutation.mutate();
                   }}
-                  disabled={archiveMutation.isPending}
+                  disabled={!canManage || archiveMutation.isPending}
                 >
                   Archive
                 </Button>
@@ -461,7 +691,7 @@ export default function SettingsPage() {
                     if (confirm("Delete this workspace permanently? This cannot be undone."))
                       deleteMutation.mutate();
                   }}
-                  disabled={deleteMutation.isPending}
+                  disabled={myRole !== "owner" || deleteMutation.isPending}
                 >
                   Delete
                 </Button>
