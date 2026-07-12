@@ -21,3 +21,18 @@ def decrypt(value: str) -> str | None:
         return _fernet.decrypt(value.encode()).decode()
     except (InvalidToken, ValueError):
         return None
+
+
+def decrypt_or_plaintext(value: str | None) -> str | None:
+    """Decrypt a stored secret, falling back to the raw value if undecryptable.
+
+    Used for columns (e.g. profiles.gemini_api_key) that historically stored
+    plaintext: rows written before encryption shipped fail Fernet decryption
+    and are treated as legacy plaintext instead of breaking existing users.
+    New writes always encrypt, so plaintext values age out naturally the next
+    time the user saves the field.
+    """
+    if not value:
+        return None
+    decrypted = decrypt(value)
+    return decrypted if decrypted is not None else value

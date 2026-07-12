@@ -6,6 +6,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, status
 from supabase import Client
 
 from core.supabase import get_supabase
+from core.crypto import decrypt_or_plaintext
 from services.github_sync import handle_issue_change, handle_pr_change, upsert_issue, upsert_pr
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,9 @@ def _get_workspace_for_repo(db: Client, owner: str, name: str) -> dict | None:
 
 def _get_gemini_key(db: Client, owner_id: str) -> str | None:
     result = db.table("profiles").select("gemini_api_key").eq("id", owner_id).single().execute()
-    return result.data.get("gemini_api_key") if result.data else None
+    stored = result.data.get("gemini_api_key") if result.data else None
+    # Keys are encrypted at rest; pre-encryption rows are legacy plaintext.
+    return decrypt_or_plaintext(stored)
 
 
 @router.post("/github")

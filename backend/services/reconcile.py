@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from supabase import Client
 
+from core.crypto import decrypt_or_plaintext
 from services.github import get_github_token
 from services.github_sync import handle_issue_change, handle_pr_change, upsert_issue, upsert_pr
 
@@ -31,7 +32,9 @@ async def reconcile_all_workspaces(db: Client):
 
 async def _reconcile_workspace(db: Client, workspace: dict):
     profile = db.table("profiles").select("gemini_api_key").eq("id", workspace["owner_id"]).single().execute()
-    gemini_key = profile.data.get("gemini_api_key") if profile.data else None
+    stored_key = profile.data.get("gemini_api_key") if profile.data else None
+    # Keys are Fernet-encrypted at rest; pre-encryption rows are legacy plaintext.
+    gemini_key = decrypt_or_plaintext(stored_key)
 
     token = get_github_token(db, workspace["owner_id"])
     if not token:
