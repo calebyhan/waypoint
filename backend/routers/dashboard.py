@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from supabase import Client
 
 from core.deps import get_current_user
+from core.permissions import assert_workspace_active
 from core.supabase import get_supabase
 from services.github import get_github_token
 from services.github_sync import bump_task
@@ -110,6 +111,7 @@ async def update_task_status(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     if body.status not in ("open", "in_review", "done"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
 
@@ -158,6 +160,7 @@ async def update_task_assignee(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     return bump_task(db, task_id, {"assignee": body.assignee})
 
 
@@ -176,6 +179,7 @@ async def update_task_schedule(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
@@ -196,6 +200,7 @@ async def decide_match_proposal(
 ):
     """PM accepts or rejects a proposed issue/PR-to-task link."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
 
     proposal = db.table("match_proposals").select("*").eq("id", proposal_id).single().execute()
     if not proposal.data:
@@ -229,6 +234,7 @@ async def unlink_task_github(
     issue/PR stays as-is upstream; this only clears Waypoint's pointer so a
     human can re-match later."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
 
     if kind == "issue":
         bump_task(db, task_id, {"github_issue_id": None})
@@ -257,6 +263,7 @@ async def resolve_conflict(
     """Resolve a flagged github_conflict: keep_waypoint re-pushes Waypoint's
     status to GitHub; keep_github reverts the task's status to match GitHub."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     if body.resolution not in ("keep_waypoint", "keep_github"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid resolution")
 
@@ -292,6 +299,7 @@ async def reschedule_tasks(
 ):
     """Re-run the scheduler on all workspace tasks with updated parameters."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
 
     tasks = (
         db.table("tasks")

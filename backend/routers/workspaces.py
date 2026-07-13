@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from supabase import Client
 
 from core.deps import get_current_user
-from core.permissions import assert_role, get_role
+from core.permissions import assert_role, assert_workspace_active, get_role
 from core.supabase import get_supabase
 from services.github import get_github_token, list_repos as gh_list_repos
 
@@ -197,6 +197,7 @@ async def connect_repo(
 ):
     """Connect a GitHub repo to the workspace."""
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     result = (
         db.table("workspaces")
         .update({"repo_owner": body.repo_owner, "repo_name": body.repo_name})
@@ -258,6 +259,7 @@ async def update_member_role(
     db: Client = Depends(get_supabase),
 ):
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     if body.role not in {"pm", "member"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Role must be 'pm' or 'member'")
     if get_role(db, workspace_id, member_user_id) == "owner":
@@ -280,6 +282,7 @@ async def remove_member(
     db: Client = Depends(get_supabase),
 ):
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     if get_role(db, workspace_id, member_user_id) == "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot remove the workspace owner")
     db.table("workspace_members").delete().eq("workspace_id", workspace_id).eq("user_id", member_user_id).execute()
@@ -298,6 +301,7 @@ async def create_invite(
     db: Client = Depends(get_supabase),
 ):
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     if body.role not in {"pm", "member"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Role must be 'pm' or 'member'")
     result = db.table("workspace_invites").insert({
@@ -336,6 +340,7 @@ async def revoke_invite(
     db: Client = Depends(get_supabase),
 ):
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     db.table("workspace_invites").update({"status": "revoked"}).eq("id", invite_id).eq(
         "workspace_id", workspace_id
     ).execute()
@@ -388,6 +393,7 @@ async def create_team_member(
     db: Client = Depends(get_supabase),
 ):
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     if body.role not in VALID_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid role: {body.role}")
     result = db.table("team_members").insert({
@@ -408,6 +414,7 @@ async def sync_team_members(
 ):
     """Replace all team members for a workspace (used by ingest wizard)."""
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     for m in body.members:
         if m.role not in VALID_ROLES:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid role: {m.role}")
@@ -438,6 +445,7 @@ async def update_team_member(
     db: Client = Depends(get_supabase),
 ):
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
@@ -455,6 +463,7 @@ async def delete_team_member(
     db: Client = Depends(get_supabase),
 ):
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     db.table("team_members").delete().eq("id", member_id).execute()
 
 
@@ -472,6 +481,7 @@ async def link_team_member(
 ):
     """Link (or unlink, if user_id is null) a scheduling-roster row to a real workspace member's account."""
     assert_role(db, workspace_id, user["id"], minimum="pm")
+    assert_workspace_active(db, workspace_id)
     if body.user_id is not None and get_role(db, workspace_id, body.user_id) is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user_id is not a member of this workspace")
     result = (

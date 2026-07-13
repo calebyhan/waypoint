@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from supabase import Client
 
 from core.deps import get_current_user
+from core.permissions import assert_workspace_active
 from core.supabase import get_supabase
 from services.ai import decompose_prd
 from services.diff import compute_plan_diff
@@ -144,6 +145,7 @@ async def update_plan_bulk(
 ):
     """Bulk update the plan — used during proposal editing."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
 
     for epic_data in body.epics:
         epic_id = epic_data.pop("id", None)
@@ -166,6 +168,7 @@ async def approve_plan(
 ):
     """Approve the plan — materialize decomposition into epics/tasks if needed, set all to open."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
 
     epics = db.table("epics").select("id").eq("workspace_id", workspace_id).execute()
 
@@ -197,6 +200,7 @@ async def create_epic(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     result = db.table("epics").insert({
         "workspace_id": workspace_id,
         "title": body.title,
@@ -214,6 +218,7 @@ async def update_epic(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
@@ -229,6 +234,7 @@ async def delete_epic(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     db.table("epics").delete().eq("id", epic_id).execute()
 
 
@@ -240,6 +246,7 @@ async def create_task(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     insert_data = {
         "workspace_id": workspace_id,
         "epic_id": body.epic_id,
@@ -278,6 +285,7 @@ async def update_task(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
@@ -312,6 +320,7 @@ async def delete_task(
     db: Client = Depends(get_supabase),
 ):
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
     db.table("tasks").delete().eq("id", task_id).execute()
 
 
@@ -325,6 +334,7 @@ async def split_task(
 ):
     """Split a task into multiple subtasks, then delete the original."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
 
     original = db.table("tasks").select("*").eq("id", task_id).single().execute()
     if not original.data:
@@ -356,6 +366,7 @@ async def merge_tasks(
 ):
     """Merge multiple tasks into a single task."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
 
     if len(body.task_ids) < 2:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Need at least 2 tasks to merge")
@@ -399,6 +410,7 @@ async def reingest_prd(
 ):
     """Decompose an updated PRD and diff it against the existing plan."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
 
     profile = db.table("profiles").select("gemini_api_key").eq("id", user["id"]).single().execute()
     gemini_key = profile.data.get("gemini_api_key") if profile.data else None
@@ -443,6 +455,7 @@ async def approve_reingest(
 ):
     """Apply PM-approved changes from a re-ingestion diff."""
     _assert_membership(db, workspace_id, user["id"])
+    assert_workspace_active(db, workspace_id)
 
     for task_id in body.removed_task_ids:
         db.table("tasks").delete().eq("id", task_id).execute()
