@@ -8,7 +8,13 @@ from supabase import Client
 from core.deps import get_current_user
 from core.permissions import assert_role, assert_workspace_active, get_role
 from core.supabase import get_supabase
-from services.github import get_github_token, list_repos as gh_list_repos
+from postgrest.exceptions import APIError
+from services.github import get_github_token, list_repos as gh_list_repos, validate_repo
+
+
+def _is_unique_violation(e: APIError) -> bool:
+    return getattr(e, "code", None) == "23505"
+
 
 # Roles allowed to see the workspace's webhook HMAC secret. A plain member
 # knowing the secret could forge signed webhook payloads, so it's pm/owner only.
@@ -123,7 +129,15 @@ async def update_workspace(
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
-    result = db.table("workspaces").update(updates).eq("id", workspace_id).execute()
+    try:
+        result = db.table("workspaces").update(updates).eq("id", workspace_id).execute()
+    except APIError as e:
+        if _is_unique_violation(e):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This repository is already connected to another workspace.",
+            ) from e
+        raise
     return result.data[0] if result.data else None
 
 
@@ -210,15 +224,48 @@ async def connect_repo(
     user: dict = Depends(get_current_user),
     db: Client = Depends(get_supabase),
 ):
-    """Connect a GitHub repo to the workspace."""
+    """Connect a GitHub repo to the workspace.
+
+    The connecting user must actually have access to the repo on GitHub
+    (checked with their own token), and a repo can only be connected to one
+    active workspace at a time.
+    """
     assert_role(db, workspace_id, user["id"], minimum="pm")
     assert_workspace_active(db, workspace_id)
-    result = (
-        db.table("workspaces")
-        .update({"repo_owner": body.repo_owner, "repo_name": body.repo_name})
-        .eq("id", workspace_id)
-        .execute()
-    )
+
+    token = get_github_token(db, user["id"])
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub isn't connected. Reconnect your GitHub account to continue.",
+        )
+    try:
+        has_access = await validate_repo(body.repo_owner, body.repo_name, token)
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to verify the repository with GitHub. Please try again.",
+        ) from e
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have access to this repository on GitHub.",
+        )
+
+    try:
+        result = (
+            db.table("workspaces")
+            .update({"repo_owner": body.repo_owner, "repo_name": body.repo_name})
+            .eq("id", workspace_id)
+            .execute()
+        )
+    except APIError as e:
+        if _is_unique_violation(e):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This repository is already connected to another workspace.",
+            ) from e
+        raise
     return result.data[0] if result.data else None
 
 
