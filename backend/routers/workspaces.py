@@ -10,6 +10,10 @@ from core.permissions import assert_role, assert_workspace_active, get_role
 from core.supabase import get_supabase
 from services.github import get_github_token, list_repos as gh_list_repos
 
+# Roles allowed to see the workspace's webhook HMAC secret. A plain member
+# knowing the secret could forge signed webhook payloads, so it's pm/owner only.
+_SECRET_ROLES = {"pm", "owner"}
+
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 
@@ -50,24 +54,30 @@ async def create_workspace(
 @router.get("")
 async def list_workspaces(
     state: str | None = None,
+    include_archived: bool = False,
     user: dict = Depends(get_current_user),
     db: Client = Depends(get_supabase),
 ):
     memberships = (
         db.table("workspace_members")
-        .select("workspace_id")
+        .select("workspace_id, role")
         .eq("user_id", user["id"])
         .execute()
     )
     workspace_ids = [m["workspace_id"] for m in memberships.data]
+    role_by_workspace = {m["workspace_id"]: m.get("role") for m in memberships.data}
     if not workspace_ids:
         return []
 
     query = db.table("workspaces").select("*").in_("id", workspace_ids)
     if state:
         query = query.eq("state", state)
-    else:
+    elif include_archived:
         query = query.neq("state", "deleted")
+    else:
+        # docs/data-model.md: archived workspaces are hidden from the default
+        # list. Reach them via ?include_archived=true or ?state=archived.
+        query = query.eq("state", "active")
     result = query.execute()
     workspaces = result.data
 
@@ -82,6 +92,8 @@ async def list_workspaces(
 
     for ws in workspaces:
         ws["has_ingestion"] = ws["id"] in ingested_ids
+        if role_by_workspace.get(ws["id"]) not in _SECRET_ROLES:
+            ws.pop("webhook_secret", None)
 
     return workspaces
 
@@ -92,9 +104,12 @@ async def get_workspace(
     user: dict = Depends(get_current_user),
     db: Client = Depends(get_supabase),
 ):
-    assert_role(db, workspace_id, user["id"], minimum="member")
+    role = assert_role(db, workspace_id, user["id"], minimum="member")
     result = db.table("workspaces").select("*").eq("id", workspace_id).single().execute()
-    return result.data
+    workspace = result.data
+    if workspace and role not in _SECRET_ROLES:
+        workspace.pop("webhook_secret", None)
+    return workspace
 
 
 @router.patch("/{workspace_id}")
