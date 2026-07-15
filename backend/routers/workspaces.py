@@ -1,24 +1,36 @@
 import secrets
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from postgrest.exceptions import APIError
 from pydantic import BaseModel
 from supabase import Client
 
 from core.deps import get_current_user
 from core.permissions import assert_role, assert_workspace_active, get_role
 from core.supabase import get_supabase
-from postgrest.exceptions import APIError
 from services.github import get_github_token, list_repos as gh_list_repos, validate_repo
+
+# Roles allowed to see the workspace's webhook HMAC secret. A plain member
+# knowing the secret could forge signed webhook payloads, so it's pm/owner only.
+_SECRET_ROLES = {"pm", "owner"}
 
 
 def _is_unique_violation(e: APIError) -> bool:
     return getattr(e, "code", None) == "23505"
 
 
-# Roles allowed to see the workspace's webhook HMAC secret. A plain member
-# knowing the secret could forge signed webhook payloads, so it's pm/owner only.
-_SECRET_ROLES = {"pm", "owner"}
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -366,13 +378,46 @@ async def create_invite(
     assert_workspace_active(db, workspace_id)
     if body.role not in {"pm", "member"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Role must be 'pm' or 'member'")
-    result = db.table("workspace_invites").insert({
-        "workspace_id": workspace_id,
-        "github_username": body.github_username.strip().lower(),
-        "role": body.role,
-        "invited_by": user["id"],
-        "status": "pending",
-    }).execute()
+
+    github_username = body.github_username.strip().lower()
+
+    # Reject invites that target someone who is already a member of this
+    # workspace. Existing members' roles must go through PATCH .../members/{id},
+    # which already refuses to touch the owner — this closes the bypass where
+    # an invite could silently re-role (or demote the owner of) an existing
+    # member the next time they log in via /auth/callback.
+    existing_profile = (
+        db.table("profiles")
+        .select("id")
+        .ilike("github_username", github_username)
+        .execute()
+    )
+    if existing_profile.data:
+        target_user_id = existing_profile.data[0]["id"]
+        if get_role(db, workspace_id, target_user_id) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This GitHub user is already a member of this workspace. "
+                       "Use the member role dropdown to change their role.",
+            )
+
+    try:
+        result = db.table("workspace_invites").insert({
+            "workspace_id": workspace_id,
+            "github_username": github_username,
+            "role": body.role,
+            "invited_by": user["id"],
+            "status": "pending",
+        }).execute()
+    except APIError as e:
+        # Unique index uq_workspace_invites_pending violation -> a pending
+        # invite for this username already exists in this workspace.
+        if _is_unique_violation(e):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An invite is already pending for this GitHub username.",
+            ) from e
+        raise
     return result.data[0]
 
 
@@ -391,6 +436,10 @@ async def list_invites(
         .order("created_at")
         .execute()
     )
+    now = datetime.now(timezone.utc)
+    for invite in result.data:
+        expires_at = _parse_timestamp(invite.get("expires_at"))
+        invite["is_expired"] = expires_at is not None and expires_at <= now
     return result.data
 
 
