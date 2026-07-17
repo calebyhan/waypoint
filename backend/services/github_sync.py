@@ -101,9 +101,11 @@ async def handle_pr_change(
 ) -> None:
     """Centralizes PR-driven side effects: matching triggers and status transitions."""
     if is_new or action == "opened":
-        proposal = await match_pr_to_task(db, workspace["id"], saved_pr, gemini_key)
-        if proposal and proposal.get("task_id"):
-            bump_task(db, proposal["task_id"], {"status": "in_review"})
+        # Propose only -- never act. The task moves to in_review when the PM
+        # accepts the proposal (dashboard.decide_match_proposal), not when a
+        # pending proposal is merely created. A rejected proposal must leave
+        # the task's status untouched.
+        await match_pr_to_task(db, workspace["id"], saved_pr, gemini_key)
         return
 
     if saved_pr.get("linked_task_id") and action in ("closed", "reopened"):

@@ -115,3 +115,144 @@ async def test_drain_outbox_gives_up_after_max_attempts(fake_db, monkeypatch):
     assert outbox[0]["completed_at"] is not None
     updated_task = fake_db.table("tasks").select("*").eq("id", task["id"]).single().execute().data
     assert updated_task["github_sync_error"] is not None
+
+
+# --- sync_task_status_to_github ----------------------------------------------
+
+
+def _seed_linked_issue_and_task(fake_db, issue_state="open"):
+    issue = fake_db.table("github_issues").insert({
+        "workspace_id": "ws-1", "github_id": 5, "number": 12, "title": "Bug", "state": issue_state,
+    }).execute().data[0]
+    task = fake_db.table("tasks").insert({
+        "workspace_id": "ws-1", "title": "Fix bug", "github_issue_id": issue["id"],
+    }).execute().data[0]
+    return issue, task
+
+
+@pytest.mark.asyncio
+async def test_sync_task_status_to_github_close_success(fake_db, monkeypatch):
+    from services.github_writeback import sync_task_status_to_github
+
+    issue, task = _seed_linked_issue_and_task(fake_db, issue_state="open")
+    fake_update = AsyncMock(return_value={"state": "closed"})
+    monkeypatch.setattr("services.github_writeback.update_issue", fake_update)
+
+    await sync_task_status_to_github(fake_db, WORKSPACE, task, "tok", close=True)
+
+    fake_update.assert_awaited_once()
+    assert fake_update.await_args.kwargs["state"] == "closed"
+    updated = fake_db.table("github_issues").select("*").eq("id", issue["id"]).single().execute().data
+    assert updated["state"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_sync_task_status_to_github_reopen_success(fake_db, monkeypatch):
+    from services.github_writeback import sync_task_status_to_github
+
+    issue, task = _seed_linked_issue_and_task(fake_db, issue_state="closed")
+    fake_update = AsyncMock(return_value={"state": "open"})
+    monkeypatch.setattr("services.github_writeback.update_issue", fake_update)
+
+    await sync_task_status_to_github(fake_db, WORKSPACE, task, "tok", close=False)
+
+    assert fake_update.await_args.kwargs["state"] == "open"
+    updated = fake_db.table("github_issues").select("*").eq("id", issue["id"]).single().execute().data
+    assert updated["state"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_sync_task_status_to_github_missing_issue_is_noop(fake_db, monkeypatch):
+    from services.github_writeback import sync_task_status_to_github
+
+    task = fake_db.table("tasks").insert({
+        "workspace_id": "ws-1", "title": "Orphan", "github_issue_id": "nonexistent-id",
+    }).execute().data[0]
+    fake_update = AsyncMock()
+    monkeypatch.setattr("services.github_writeback.update_issue", fake_update)
+
+    await sync_task_status_to_github(fake_db, WORKSPACE, task, "tok", close=True)
+
+    fake_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close,expected_kind", [(True, "close_issue"), (False, "reopen_issue")])
+async def test_sync_task_status_to_github_failure_queues_outbox(fake_db, monkeypatch, close, expected_kind):
+    """A GitHub outage during close/reopen must never raise back to the
+    caller -- it queues an outbox retry instead (module docstring contract)."""
+    from services.github_writeback import sync_task_status_to_github
+
+    _, task = _seed_linked_issue_and_task(fake_db)
+    monkeypatch.setattr(
+        "services.github_writeback.update_issue",
+        AsyncMock(side_effect=httpx.ConnectTimeout("github down")),
+    )
+
+    await sync_task_status_to_github(fake_db, WORKSPACE, task, "tok", close=close)
+
+    outbox = fake_db.table("github_write_outbox").select("*").eq("task_id", task["id"]).execute().data
+    assert len(outbox) == 1
+    assert outbox[0]["kind"] == expected_kind
+    assert outbox[0]["payload"]["issue_number"] == 12
+
+
+@pytest.mark.asyncio
+async def test_update_issue_for_task_failure_queues_outbox(fake_db, monkeypatch):
+    issue, task = _seed_linked_issue_and_task(fake_db)
+    monkeypatch.setattr(
+        "services.github_writeback.update_issue",
+        AsyncMock(side_effect=httpx.ConnectTimeout("down")),
+    )
+
+    await update_issue_for_task(fake_db, WORKSPACE, task, "tok")
+
+    outbox = fake_db.table("github_write_outbox").select("*").eq("task_id", task["id"]).execute().data
+    assert len(outbox) == 1
+    assert outbox[0]["kind"] == "update_issue"
+    assert outbox[0]["payload"]["issue_number"] == issue["number"]
+
+
+# --- drain_outbox retry kinds beyond create_issue -----------------------------
+
+
+def _seed_outbox_row(fake_db, kind, payload):
+    fake_db.table("workspaces").insert({
+        "id": "ws-1", "name": "Test", "owner_id": "user-1", "state": "active",
+        "repo_owner": "acme", "repo_name": "widgets", "webhook_secret": "shh",
+    }).execute()
+    task = fake_db.table("tasks").insert({"workspace_id": "ws-1", "title": "T"}).execute().data[0]
+    row = fake_db.table("github_write_outbox").insert({
+        "workspace_id": "ws-1", "task_id": task["id"], "kind": kind,
+        "payload": payload, "attempts": 1, "last_error": "boom",
+    }).execute().data[0]
+    return row
+
+
+@pytest.mark.asyncio
+async def test_retry_one_update_issue_kind_succeeds(fake_db, monkeypatch):
+    row = _seed_outbox_row(fake_db, "update_issue", {"issue_number": 3, "title": "T", "body": "d"})
+    monkeypatch.setattr("services.github.get_github_token", lambda db, uid: "tok")
+    fake_update = AsyncMock(return_value={"title": "T", "body": "d", "state": "open"})
+    monkeypatch.setattr("services.github_writeback.update_issue", fake_update)
+
+    await drain_outbox(fake_db)
+
+    fake_update.assert_awaited_once()
+    saved = fake_db.table("github_write_outbox").select("*").eq("id", row["id"]).single().execute().data
+    assert saved["completed_at"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,expected_state", [("close_issue", "closed"), ("reopen_issue", "open")])
+async def test_retry_one_close_and_reopen_issue_kinds(fake_db, monkeypatch, kind, expected_state):
+    row = _seed_outbox_row(fake_db, kind, {"issue_number": 4})
+    monkeypatch.setattr("services.github.get_github_token", lambda db, uid: "tok")
+    fake_update = AsyncMock(return_value={"state": expected_state})
+    monkeypatch.setattr("services.github_writeback.update_issue", fake_update)
+
+    await drain_outbox(fake_db)
+
+    assert fake_update.await_args.kwargs["state"] == expected_state
+    saved = fake_db.table("github_write_outbox").select("*").eq("id", row["id"]).single().execute().data
+    assert saved["completed_at"] is not None
