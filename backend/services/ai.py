@@ -1,9 +1,16 @@
 import json
 import logging
+from collections.abc import Awaitable, Callable
+from enum import Enum
 
+import httpx
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
+from pydantic import ValidationError
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
+from core.config import settings
 from models.decomposition import (
     ClarifyingQuestionsResult,
     DecompositionEpic,
@@ -16,6 +23,129 @@ from models.decomposition import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class GeminiErrorKind(str, Enum):
+    INVALID_KEY = "invalid_key"        # 401/403 from Gemini
+    QUOTA_EXCEEDED = "quota_exceeded"  # 429 (RPD/TPM/RPM)
+    TIMEOUT = "timeout"                # client-side timeout or 504
+    SERVER_ERROR = "server_error"      # 5xx from Gemini
+    BAD_OUTPUT = "bad_output"          # JSON parse / Pydantic validation failure
+    UNKNOWN = "unknown"
+
+
+class GeminiError(Exception):
+    """Typed wrapper for anything that can go wrong talking to Gemini.
+
+    `message` is always safe to show to an end user -- raw SDK exception text
+    must never travel past classify_exception().
+    """
+
+    def __init__(self, kind: GeminiErrorKind, message: str, retry_after: int | None = None):
+        self.kind = kind
+        self.message = message
+        self.retry_after = retry_after
+        super().__init__(message)
+
+
+def classify_exception(exc: Exception) -> GeminiError:
+    """Map an exception from the google-genai SDK (or json/pydantic parsing)
+    to a GeminiError with an actionable, non-leaky kind + message."""
+    if isinstance(exc, GeminiError):
+        return exc
+
+    if isinstance(exc, (json.JSONDecodeError, ValidationError)):
+        return GeminiError(
+            GeminiErrorKind.BAD_OUTPUT,
+            "The model returned output that didn't match the expected format. Please retry.",
+        )
+
+    if isinstance(exc, genai_errors.APIError):
+        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+        if code in (401, 403):
+            return GeminiError(
+                GeminiErrorKind.INVALID_KEY,
+                "Your Gemini API key was rejected. Update it in your profile settings.",
+            )
+        if code == 429:
+            return GeminiError(
+                GeminiErrorKind.QUOTA_EXCEEDED,
+                "Gemini rate limit or daily quota reached for this key. Try again later.",
+                retry_after=60,
+            )
+        if code and 500 <= code < 600:
+            return GeminiError(
+                GeminiErrorKind.SERVER_ERROR,
+                "Gemini is temporarily unavailable. Please retry.",
+            )
+
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return GeminiError(GeminiErrorKind.TIMEOUT, "The request to Gemini timed out. Please retry.")
+
+    return GeminiError(GeminiErrorKind.UNKNOWN, "AI request failed unexpectedly. Please retry.")
+
+
+_RETRYABLE_KINDS = (
+    GeminiErrorKind.QUOTA_EXCEEDED,
+    GeminiErrorKind.SERVER_ERROR,
+    GeminiErrorKind.TIMEOUT,
+)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    return isinstance(exc, GeminiError) and exc.kind in _RETRYABLE_KINDS
+
+
+async def _with_retry(fn: Callable[[], Awaitable]):
+    """Run one Gemini call with exponential backoff on 429/5xx/timeout.
+
+    Every exception is classified into a GeminiError before the retry
+    predicate sees it, so non-retryable kinds (invalid key, bad output)
+    fail fast and callers only ever catch GeminiError.
+    """
+
+    async def classified():
+        try:
+            return await fn()
+        except GeminiError:
+            raise
+        except Exception as exc:
+            raise classify_exception(exc) from exc
+
+    retryer = AsyncRetrying(
+        stop=stop_after_attempt(settings.gemini_retry_attempts),
+        wait=wait_exponential(
+            multiplier=1,
+            min=settings.gemini_retry_wait_min,
+            max=settings.gemini_retry_wait_max,
+        ),
+        retry=retry_if_exception(_is_retryable),
+        reraise=True,
+    )
+    return await retryer(classified)
+
+
+def _make_client(gemini_key: str, timeout_ms: int) -> genai.Client:
+    return genai.Client(
+        api_key=gemini_key,
+        http_options=types.HttpOptions(timeout=timeout_ms),  # milliseconds
+    )
+
+
+def _usage_from_response(response) -> dict:
+    meta = getattr(response, "usage_metadata", None)
+    return {
+        "tokens_in": getattr(meta, "prompt_token_count", 0) or 0,
+        "tokens_out": getattr(meta, "candidates_token_count", 0) or 0,
+    }
+
+
+def _sum_usage(total: dict, part: dict) -> dict:
+    return {
+        "tokens_in": total["tokens_in"] + part["tokens_in"],
+        "tokens_out": total["tokens_out"] + part["tokens_out"],
+    }
+
 
 QUESTIONS_PROMPT = """You are an AI project planning assistant. A project manager has provided a PRD (Product Requirements Document) or project description. Your job is to ask up to 3 clarifying questions that will help you produce a better task breakdown.
 
@@ -133,19 +263,26 @@ def _build_structured_context(ctx: ProjectContext | None) -> str:
     return "\n\nStructured context from PM:\n" + "\n".join(parts)
 
 
-async def generate_questions(content: str, project_context: ProjectContext, gemini_key: str) -> ClarifyingQuestionsResult:
-    client = genai.Client(api_key=gemini_key)
+async def generate_questions(
+    content: str, project_context: ProjectContext, gemini_key: str
+) -> tuple[ClarifyingQuestionsResult, dict]:
+    """Returns (result, usage) where usage carries real token counts."""
+    client = _make_client(gemini_key, settings.gemini_light_timeout_ms)
     prompt = QUESTIONS_PROMPT + "\n\nPRD Content:\n" + content + _build_structured_context(project_context)
-    response = await client.aio.models.generate_content(
-        model="gemini-3.1-flash-lite",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.3,
-        ),
-    )
-    data = json.loads(response.text)
-    return ClarifyingQuestionsResult(**data)
+
+    async def call():
+        response = await client.aio.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.3,
+            ),
+        )
+        data = json.loads(response.text)
+        return ClarifyingQuestionsResult(**data), _usage_from_response(response)
+
+    return await _with_retry(call)
 
 
 def _build_prd_context(content: str, project_context: ProjectContext, answers: dict[str, str] | None) -> str:
@@ -163,18 +300,22 @@ async def _generate_skeleton(
     project_context: ProjectContext,
     answers: dict[str, str] | None,
     client: genai.Client,
-) -> PlanSkeleton:
+) -> tuple[PlanSkeleton, dict]:
     prompt = SKELETON_PROMPT + _build_prd_context(content, project_context, answers)
-    response = await client.aio.models.generate_content(
-        model=DECOMPOSITION_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.3,
-            max_output_tokens=4096,
-        ),
-    )
-    return PlanSkeleton(**json.loads(response.text))
+
+    async def call():
+        response = await client.aio.models.generate_content(
+            model=DECOMPOSITION_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.3,
+                max_output_tokens=4096,
+            ),
+        )
+        return PlanSkeleton(**json.loads(response.text)), _usage_from_response(response)
+
+    return await _with_retry(call)
 
 
 async def _generate_epic_tasks(
@@ -185,7 +326,7 @@ async def _generate_epic_tasks(
     all_epics: list[EpicSkeleton],
     prior_context: list[dict],
     client: genai.Client,
-) -> list:
+) -> tuple[list, dict]:
     prompt = EPIC_TASKS_PROMPT
     prompt += _build_prd_context(content, project_context, answers)
 
@@ -203,17 +344,20 @@ async def _generate_epic_tasks(
             for title in prev["tasks"]:
                 prompt += f"    - {title}\n"
 
-    response = await client.aio.models.generate_content(
-        model=DECOMPOSITION_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.4,
-            max_output_tokens=16384,
-        ),
-    )
-    result = EpicTasksResult(**json.loads(response.text))
-    return result.tasks
+    async def call():
+        response = await client.aio.models.generate_content(
+            model=DECOMPOSITION_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.4,
+                max_output_tokens=16384,
+            ),
+        )
+        result = EpicTasksResult(**json.loads(response.text))
+        return result.tasks, _usage_from_response(response)
+
+    return await _with_retry(call)
 
 
 async def decompose_prd(
@@ -221,26 +365,55 @@ async def decompose_prd(
     project_context: ProjectContext,
     answers: dict[str, str] | None,
     gemini_key: str,
-) -> DecompositionResult:
-    client = genai.Client(api_key=gemini_key)
+    on_epic_done: Callable[[DecompositionResult, int], None] | None = None,
+) -> tuple[DecompositionResult, dict]:
+    """Decompose a PRD into epics + tasks.
 
-    skeleton = await _generate_skeleton(content, project_context, answers, client)
+    Returns (result, usage) where usage sums real token counts across the
+    skeleton call and every per-epic call.
+
+    `on_epic_done(partial_result, total_epics)` is invoked after each epic's
+    tasks are generated so callers can persist partial progress — a failure on
+    epic N then doesn't discard the (already paid-for) epics 1..N-1.
+    """
+    client = _make_client(gemini_key, settings.gemini_heavy_timeout_ms)
+
+    skeleton, usage = await _generate_skeleton(content, project_context, answers, client)
 
     epics: list[DecompositionEpic] = []
     context: list[dict] = []
 
     for epic_skel in skeleton.epics:
-        tasks = await _generate_epic_tasks(content, project_context, answers, epic_skel, skeleton.epics, context, client)
+        tasks, epic_usage = await _generate_epic_tasks(
+            content, project_context, answers, epic_skel, skeleton.epics, context, client
+        )
+        usage = _sum_usage(usage, epic_usage)
         epics.append(DecompositionEpic(title=epic_skel.title, tasks=tasks))
         context.append({"epic": epic_skel.title, "tasks": [t.title for t in tasks]})
+        if on_epic_done is not None:
+            try:
+                partial = DecompositionResult(summary=skeleton.summary, epics=list(epics))
+                on_epic_done(partial, len(skeleton.epics))
+            except Exception:
+                logger.exception("on_epic_done callback failed; continuing decomposition")
 
-    return DecompositionResult(summary=skeleton.summary, epics=epics)
+    return DecompositionResult(summary=skeleton.summary, epics=epics), usage
 
 
 async def generate_embedding(text: str, gemini_key: str) -> list[float]:
-    client = genai.Client(api_key=gemini_key)
-    response = await client.aio.models.embed_content(
-        model="gemini-embedding-2",
-        contents=text,
-    )
-    return response.embeddings[0].values
+    return (await generate_embeddings([text], gemini_key))[0]
+
+
+async def generate_embeddings(texts: list[str], gemini_key: str) -> list[list[float]]:
+    """Embed a batch of texts in a single Gemini call."""
+    client = _make_client(gemini_key, settings.gemini_light_timeout_ms)
+
+    async def call():
+        response = await client.aio.models.embed_content(
+            model="gemini-embedding-2",
+            contents=texts,
+            config={"output_dimensionality": 768},
+        )
+        return [e.values for e in response.embeddings]
+
+    return await _with_retry(call)
