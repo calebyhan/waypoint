@@ -1,14 +1,20 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from supabase import Client
 
+from core.crypto import decrypt_or_plaintext
 from core.deps import get_current_user
 from core.permissions import assert_workspace_active
 from core.supabase import get_supabase
-from services.ai import decompose_prd
+from routers.ingest import _content_hash, _log_usage, ai_http_exception, assert_prd_length
+from services.ai import DECOMPOSITION_MODEL, decompose_prd, generate_embeddings
 from services.diff import compute_plan_diff
 from services.github import get_github_token
 from services.github_writeback import create_issue_for_task, update_issue_for_task
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workspaces/{workspace_id}", tags=["projects"])
 
@@ -78,6 +84,16 @@ def _assert_membership(db: Client, workspace_id: str, user_id: str):
     )
     if not result.data:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a workspace member")
+
+
+def _get_optional_gemini_key(db: Client, user_id: str) -> str | None:
+    """Best-effort key lookup -- embedding generation is optional, so a
+    missing profile/key must never fail the calling endpoint."""
+    try:
+        result = db.table("profiles").select("gemini_api_key").eq("id", user_id).single().execute()
+        return decrypt_or_plaintext(result.data.get("gemini_api_key")) if result.data else None
+    except Exception:
+        return None
 
 
 def _github_writeback_context(db: Client, workspace_id: str) -> tuple[dict, str] | None:
@@ -185,7 +201,8 @@ async def approve_plan(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No plan to approve")
 
         decomposition = ingestion.data[0]["decomposition"]
-        _materialize_decomposition(db, workspace_id, decomposition)
+        gemini_key = _get_optional_gemini_key(db, user["id"])
+        await _materialize_decomposition(db, workspace_id, decomposition, gemini_key)
 
     db.table("tasks").update({"status": "open"}).eq("workspace_id", workspace_id).execute()
 
@@ -413,18 +430,66 @@ async def reingest_prd(
     assert_workspace_active(db, workspace_id)
 
     profile = db.table("profiles").select("gemini_api_key").eq("id", user["id"]).single().execute()
-    gemini_key = profile.data.get("gemini_api_key") if profile.data else None
+    gemini_key = decrypt_or_plaintext(profile.data.get("gemini_api_key")) if profile.data else None
     if not gemini_key:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Gemini API key not configured")
 
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Content is empty")
+    assert_prd_length(content)
+
     existing_tasks = db.table("tasks").select("*").eq("workspace_id", workspace_id).execute().data
 
-    try:
-        new_decomposition = await decompose_prd(body.content, None, None, gemini_key)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"AI error: {e}")
+    # Decomposition cache: identical content re-ingested twice must not
+    # re-call Gemini (mirrors the initial-ingest cache in ingest.py).
+    content_h = _content_hash(content)
+    cached = (
+        db.table("ingestions")
+        .select("decomposition")
+        .eq("workspace_id", workspace_id)
+        .eq("content_hash", content_h)
+        .execute()
+    )
+    cached_decomposition = cached.data[0].get("decomposition") if cached.data else None
 
-    diff = compute_plan_diff(existing_tasks, [e.model_dump() for e in new_decomposition.epics])
+    if cached_decomposition and not cached_decomposition.get("partial"):
+        new_epics = cached_decomposition.get("epics", [])
+    else:
+        progress = {"completed": 0, "total": None}
+
+        def _persist_partial(partial, total_epics: int):
+            progress["completed"] = len(partial.epics)
+            progress["total"] = total_epics
+            payload = partial.model_dump()
+            payload["partial"] = True
+            db.table("ingestions").upsert({
+                "workspace_id": workspace_id,
+                "content_hash": content_h,
+                "raw_content": content,
+                "decomposition": payload,
+            }, on_conflict="workspace_id,content_hash").execute()
+
+        try:
+            new_decomposition, usage = await decompose_prd(
+                content, None, None, gemini_key, on_epic_done=_persist_partial
+            )
+            _log_usage(db, user["id"], workspace_id, DECOMPOSITION_MODEL, usage["tokens_in"], usage["tokens_out"])
+        except Exception as e:
+            extra = None
+            if progress["total"] is not None:
+                extra = {"partial_epics_completed": progress["completed"], "total_epics": progress["total"]}
+            raise ai_http_exception(e, extra)
+
+        db.table("ingestions").upsert({
+            "workspace_id": workspace_id,
+            "content_hash": content_h,
+            "raw_content": content,
+            "decomposition": new_decomposition.model_dump(),
+        }, on_conflict="workspace_id,content_hash").execute()
+        new_epics = [e.model_dump() for e in new_decomposition.epics]
+
+    diff = compute_plan_diff(existing_tasks, new_epics)
 
     issue_links = {
         i["linked_task_id"]: i["number"]
@@ -444,6 +509,7 @@ class ApplyReingestChanges(BaseModel):
     added: list[dict] = []
     removed_task_ids: list[str] = []
     modified: list[dict] = []  # [{task_id, title, description, estimated_days, priority}]
+    idempotency_key: str | None = None  # client-generated, one per diff-review session
 
 
 @router.post("/reingest/approve")
@@ -456,6 +522,21 @@ async def approve_reingest(
     """Apply PM-approved changes from a re-ingestion diff."""
     _assert_membership(db, workspace_id, user["id"])
     assert_workspace_active(db, workspace_id)
+
+    if body.idempotency_key:
+        already = (
+            db.table("reingest_applications")
+            .select("id")
+            .eq("workspace_id", workspace_id)
+            .eq("idempotency_key", body.idempotency_key)
+            .execute()
+        )
+        if already.data:
+            return {"status": "already_applied"}
+        db.table("reingest_applications").insert({
+            "workspace_id": workspace_id,
+            "idempotency_key": body.idempotency_key,
+        }).execute()
 
     for task_id in body.removed_task_ids:
         db.table("tasks").delete().eq("id", task_id).execute()
@@ -473,6 +554,17 @@ async def approve_reingest(
             target_epic_id = epic_result.data[0]["id"]
 
         for task_data in body.added:
+            # Dedup guard: a double-submit (double click / client retry) must
+            # not create duplicate rows for the same added task.
+            existing = (
+                db.table("tasks")
+                .select("id")
+                .eq("workspace_id", workspace_id)
+                .eq("title", task_data["title"])
+                .execute()
+            )
+            if existing.data:
+                continue
             db.table("tasks").insert({
                 "workspace_id": workspace_id,
                 "epic_id": task_data.get("epic_id", target_epic_id),
@@ -489,32 +581,68 @@ async def approve_reingest(
     return {"status": "applied"}
 
 
-def _materialize_decomposition(db: Client, workspace_id: str, decomposition: dict):
-    """Convert a decomposition JSON into actual epic and task rows."""
-    for i, epic_data in enumerate(decomposition.get("epics", [])):
-        epic_result = db.table("epics").insert({
-            "workspace_id": workspace_id,
-            "title": epic_data["title"],
-            "sort_order": i,
-        }).execute()
-        epic_id = epic_result.data[0]["id"]
+async def _embed_decomposition_tasks(decomposition: dict, gemini_key: str | None) -> list[list[float] | None]:
+    """Batch-embed every task in the decomposition (one Gemini call).
 
-        for j, task_data in enumerate(epic_data.get("tasks", [])):
-            insert = {
+    Best-effort: any failure (no key, bad key, quota, network) returns Nones —
+    embedding population must never fail plan approval. Tasks left with a NULL
+    embedding simply degrade to fuzzy-title matching in matching.py.
+    """
+    texts = [
+        f"{task_data['title']}\n{task_data.get('description') or ''}"
+        for epic_data in decomposition.get("epics", [])
+        for task_data in epic_data.get("tasks", [])
+    ]
+    if not texts or not gemini_key:
+        return [None] * len(texts)
+    try:
+        return await generate_embeddings(texts, gemini_key)
+    except Exception:
+        logger.exception("Task embedding generation failed; materializing without embeddings")
+        return [None] * len(texts)
+
+
+async def _materialize_decomposition(db: Client, workspace_id: str, decomposition: dict, gemini_key: str | None = None):
+    """Convert a decomposition JSON into actual epic and task rows.
+
+    approve_plan only (re-)materializes when no epics exist yet for the
+    workspace, so a failure partway through must roll back its own inserts —
+    otherwise the leftover epic(s) satisfy that guard and every retry
+    silently no-ops instead of finishing materialization.
+    """
+    embeddings = await _embed_decomposition_tasks(decomposition, gemini_key)
+    task_index = 0
+    try:
+        for i, epic_data in enumerate(decomposition.get("epics", [])):
+            epic_result = db.table("epics").insert({
                 "workspace_id": workspace_id,
-                "epic_id": epic_id,
-                "title": task_data["title"],
-                "description": task_data.get("description"),
-                "motivation": task_data.get("motivation"),
-                "deliverables": task_data.get("deliverables", []),
-                "important_notes": task_data.get("important_notes", []),
-                "estimated_days": task_data.get("estimated_days"),
-                "priority": task_data.get("priority", "p1"),
-                "assignee": task_data.get("assignee"),
-                "sort_order": j,
-            }
-            if task_data.get("start_date"):
-                insert["start_date"] = task_data["start_date"]
-            if task_data.get("end_date"):
-                insert["end_date"] = task_data["end_date"]
-            db.table("tasks").insert(insert).execute()
+                "title": epic_data["title"],
+                "sort_order": i,
+            }).execute()
+            epic_id = epic_result.data[0]["id"]
+
+            for j, task_data in enumerate(epic_data.get("tasks", [])):
+                insert = {
+                    "workspace_id": workspace_id,
+                    "epic_id": epic_id,
+                    "title": task_data["title"],
+                    "description": task_data.get("description"),
+                    "motivation": task_data.get("motivation"),
+                    "deliverables": task_data.get("deliverables", []),
+                    "important_notes": task_data.get("important_notes", []),
+                    "estimated_days": task_data.get("estimated_days"),
+                    "priority": task_data.get("priority", "p1"),
+                    "assignee": task_data.get("assignee"),
+                    "sort_order": j,
+                }
+                if task_data.get("start_date"):
+                    insert["start_date"] = task_data["start_date"]
+                if task_data.get("end_date"):
+                    insert["end_date"] = task_data["end_date"]
+                if task_index < len(embeddings) and embeddings[task_index] is not None:
+                    insert["embedding"] = embeddings[task_index]
+                task_index += 1
+                db.table("tasks").insert(insert).execute()
+    except Exception:
+        db.table("epics").delete().eq("workspace_id", workspace_id).execute()
+        raise
