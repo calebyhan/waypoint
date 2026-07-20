@@ -28,6 +28,24 @@ def _assert_membership(db: Client, workspace_id: str, user_id: str):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a workspace member")
 
 
+def _check_task_version(db: Client, task_id: str, expected_version: int | None):
+    """Optimistic-locking guard for dashboard quick-actions.
+
+    Mirrors projects.py's update_task: when the client supplies the version it
+    last saw and the row has moved on, reject with 409 instead of stomping.
+    bump_task() performs the actual increment, so the caller just needs this
+    pre-check. A None version keeps the legacy last-write-wins behavior.
+    """
+    if expected_version is None:
+        return
+    current = db.table("tasks").select("version").eq("id", task_id).single().execute()
+    if current.data and current.data.get("version") != expected_version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Task was modified by another user. Reload and try again.",
+        )
+
+
 @router.get("/dashboard")
 async def get_dashboard(
     workspace_id: str,
@@ -100,6 +118,7 @@ async def get_insights(
 
 class StatusUpdate(BaseModel):
     status: str
+    version: int | None = None
 
 
 @router.patch("/tasks/{task_id}/status")
@@ -114,6 +133,7 @@ async def update_task_status(
     assert_workspace_active(db, workspace_id)
     if body.status not in ("open", "in_review", "done"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
+    _check_task_version(db, task_id, body.version)
 
     before = db.table("tasks").select("status, github_issue_id").eq("id", task_id).single().execute().data
     task = bump_task(db, task_id, {"status": body.status})
@@ -149,6 +169,7 @@ async def update_task_status(
 
 class AssigneeUpdate(BaseModel):
     assignee: str | None = None
+    version: int | None = None
 
 
 @router.patch("/tasks/{task_id}/assignee")
@@ -161,6 +182,7 @@ async def update_task_assignee(
 ):
     _assert_membership(db, workspace_id, user["id"])
     assert_workspace_active(db, workspace_id)
+    _check_task_version(db, task_id, body.version)
     return bump_task(db, task_id, {"assignee": body.assignee})
 
 
@@ -168,6 +190,7 @@ class ScheduleUpdate(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
     assignee: str | None = None
+    version: int | None = None
 
 
 @router.patch("/tasks/{task_id}/schedule")
@@ -181,8 +204,10 @@ async def update_task_schedule(
     _assert_membership(db, workspace_id, user["id"])
     assert_workspace_active(db, workspace_id)
     updates = body.model_dump(exclude_none=True)
+    expected_version = updates.pop("version", None)
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
+    _check_task_version(db, task_id, expected_version)
     return bump_task(db, task_id, updates)
 
 

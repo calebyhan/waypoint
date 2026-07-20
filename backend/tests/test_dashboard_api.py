@@ -207,3 +207,79 @@ def test_dashboard_aggregates_epic_progress(client, fake_db, workspace):
     assert body["epics"][0]["total_tasks"] == 2
     assert body["epics"][0]["done_tasks"] == 1
     assert body["epics"][0]["progress_pct"] == 50
+
+
+# --- Optimistic locking on dashboard quick-actions -----------------------------
+
+
+def test_status_patch_with_stale_version_conflicts(client, fake_db, workspace):
+    task = seed_task(fake_db, workspace["id"], version=3)
+
+    res = client.patch(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}/status",
+        json={"status": "done", "version": 2},
+    )
+
+    assert res.status_code == 409
+    unchanged = fake_db.table("tasks").select("*").eq("id", task["id"]).single().execute().data
+    assert unchanged["status"] == "open"
+
+
+def test_status_patch_with_current_version_succeeds_and_bumps(client, fake_db, workspace):
+    task = seed_task(fake_db, workspace["id"], version=3)
+
+    res = client.patch(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}/status",
+        json={"status": "in_review", "version": 3},
+    )
+
+    assert res.status_code == 200
+    assert res.json()["status"] == "in_review"
+    assert res.json()["version"] == 4
+
+
+def test_status_patch_without_version_keeps_last_write_wins(client, fake_db, workspace):
+    task = seed_task(fake_db, workspace["id"], version=7)
+
+    res = client.patch(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}/status", json={"status": "done"}
+    )
+
+    assert res.status_code == 200
+
+
+def test_assignee_patch_with_stale_version_conflicts(client, fake_db, workspace):
+    task = seed_task(fake_db, workspace["id"], version=2, assignee="alice")
+
+    res = client.patch(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}/assignee",
+        json={"assignee": "bob", "version": 1},
+    )
+
+    assert res.status_code == 409
+    unchanged = fake_db.table("tasks").select("*").eq("id", task["id"]).single().execute().data
+    assert unchanged["assignee"] == "alice"
+
+
+def test_schedule_patch_with_stale_version_conflicts(client, fake_db, workspace):
+    task = seed_task(fake_db, workspace["id"], version=2)
+
+    res = client.patch(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}/schedule",
+        json={"start_date": "2026-02-02", "version": 1},
+    )
+
+    assert res.status_code == 409
+
+
+def test_schedule_patch_with_current_version_does_not_write_version_field_directly(client, fake_db, workspace):
+    task = seed_task(fake_db, workspace["id"], version=2)
+
+    res = client.patch(
+        f"/workspaces/{workspace['id']}/tasks/{task['id']}/schedule",
+        json={"start_date": "2026-02-02", "version": 2},
+    )
+
+    assert res.status_code == 200
+    assert res.json()["version"] == 3  # bumped once by bump_task, not stomped
+    assert res.json()["start_date"] == "2026-02-02"
