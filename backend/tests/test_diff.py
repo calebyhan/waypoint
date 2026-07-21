@@ -95,3 +95,49 @@ def test_each_new_task_matched_at_most_once():
     matched_ids = {e["existing_task"]["id"] for e in diff["unchanged"] + diff["modified"]}
     assert len(matched_ids) <= 1
     assert len(diff["removed"]) == 1
+
+
+def test_dependency_only_change_is_reported_as_modified():
+    """Regression: the changed-check omitted `dependencies`, so a PRD change
+    that only altered a task's dependencies was reported as unchanged."""
+    existing = [{
+        "id": "t1",
+        "title": "Implement JWT login",
+        "description": "",
+        "motivation": "",
+        "deliverables": [],
+        "important_notes": [],
+        "estimated_days": 2,
+        "priority": "p1",
+        "dependencies": ["Set up database schema"],
+    }]
+    new_task = make_task("Implement JWT login")
+    new_task["dependencies"] = ["Set up database schema", "Add session storage"]
+    new_epics = [make_epic("Auth", [new_task])]
+
+    diff = compute_plan_diff(existing, new_epics)
+
+    assert len(diff["modified"]) == 1
+    assert diff["unchanged"] == []
+
+
+def test_identical_dependencies_still_unchanged():
+    existing = [{
+        "id": "t1",
+        "title": "Implement JWT login",
+        "description": "",
+        "motivation": "",
+        "deliverables": [],
+        "important_notes": [],
+        "estimated_days": 2,
+        "priority": "p1",
+        "dependencies": ["Set up database schema"],
+    }]
+    new_task = make_task("Implement JWT login")
+    new_task["dependencies"] = ["Set up database schema"]
+    new_epics = [make_epic("Auth", [new_task])]
+
+    diff = compute_plan_diff(existing, new_epics)
+
+    assert len(diff["unchanged"]) == 1
+    assert diff["modified"] == []

@@ -46,6 +46,7 @@ def compute_plan_diff(existing_tasks: list[dict], new_epics: list[dict]) -> dict
                 or (existing.get("motivation") or "") != new_task.get("motivation", "")
                 or (existing.get("deliverables") or []) != new_task.get("deliverables", [])
                 or (existing.get("important_notes") or []) != new_task.get("important_notes", [])
+                or (existing.get("dependencies") or []) != new_task.get("dependencies", [])
                 or existing.get("estimated_days") != new_task.get("estimated_days")
                 or existing.get("priority") != new_task.get("priority")
             )
