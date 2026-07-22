@@ -1,5 +1,8 @@
+import logging
 import math
 from datetime import date, timedelta
+
+logger = logging.getLogger(__name__)
 
 
 def _add_weekdays(start: date, days: int) -> date:
@@ -66,18 +69,35 @@ def schedule_tasks(
     assignee_last_start: dict[str, date] = {}
 
     visited: set[str] = set()
+    in_progress: set[str] = set()
+    broken_edges: set[tuple[str, str]] = set()
     order: list[str] = []
 
     def topo_visit(title: str) -> None:
         if title in visited:
             return
         visited.add(title)
+        in_progress.add(title)
         task = title_to_task.get(title)
-        if not task:
-            return
-        for dep_title in task.get("dependencies") or []:
-            if dep_title in title_to_task:
+        if task:
+            for dep_title in task.get("dependencies") or []:
+                if dep_title not in title_to_task:
+                    continue
+                if dep_title in in_progress:
+                    # Cyclic dependency (e.g. a Gemini-hallucinated decomposition
+                    # where A depends on B and B depends on A). Break the cycle
+                    # deterministically by dropping this edge -- the dependent
+                    # task is scheduled as if this dependency didn't exist --
+                    # and surface a warning instead of silently producing an
+                    # arbitrary order.
+                    broken_edges.add((title, dep_title))
+                    logger.warning(
+                        "Cyclic dependency detected: %r -> %r; ignoring this edge for scheduling",
+                        title, dep_title,
+                    )
+                    continue
                 topo_visit(dep_title)
+        in_progress.discard(title)
         order.append(title)
 
     for title in title_to_task:
@@ -91,6 +111,8 @@ def schedule_tasks(
         earliest = start
 
         for dep_title in task.get("dependencies") or []:
+            if (title, dep_title) in broken_edges:
+                continue
             if dep_title in resolved_end:
                 dep_end = resolved_end[dep_title]
                 day_after = _next_weekday(dep_end + timedelta(days=1))
