@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import pytest
 
 from services.matching import (
@@ -150,3 +152,102 @@ async def test_pr_with_no_reference_and_no_fuzzy_match_returns_none(fake_db):
     proposal = await match_pr_to_task(fake_db, WORKSPACE_ID, pr_row, gemini_key=None)
 
     assert proposal is None
+
+
+# --- Semantic (Gemini embedding) branch --------------------------------------
+
+
+def _seed_semantic_fixture(fake_db):
+    """A task whose title can't fuzzy-match the issue, forcing the semantic path."""
+    task = fake_db.table("tasks").insert({
+        "workspace_id": WORKSPACE_ID, "title": "Completely different wording here",
+    }).execute().data[0]
+    issue_row = fake_db.table("github_issues").insert({
+        "workspace_id": WORKSPACE_ID, "number": 9, "title": "xyz qrs", "state": "open",
+    }).execute().data[0]
+    return task, issue_row
+
+
+@pytest.mark.asyncio
+async def test_semantic_match_used_when_fuzzy_score_below_threshold(fake_db, monkeypatch):
+    task, issue_row = _seed_semantic_fixture(fake_db)
+    fake_db.store.rpc_results["match_tasks_by_embedding"] = [{"id": task["id"], "similarity": 0.9}]
+    monkeypatch.setattr("services.matching.generate_embedding", AsyncMock(return_value=[0.1, 0.2]))
+
+    proposal = await match_issue_to_task(fake_db, WORKSPACE_ID, issue_row, gemini_key="fake-key")
+
+    assert proposal is not None
+    assert proposal["task_id"] == task["id"]
+    assert proposal["similarity_score"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_semantic_match_respects_rejected_pairs(fake_db, monkeypatch):
+    task, issue_row = _seed_semantic_fixture(fake_db)
+    fake_db.table("match_proposals").insert({
+        "workspace_id": WORKSPACE_ID, "task_id": task["id"],
+        "github_issue_id": issue_row["id"], "status": "rejected",
+    }).execute()
+    fake_db.store.rpc_results["match_tasks_by_embedding"] = [{"id": task["id"], "similarity": 0.9}]
+    monkeypatch.setattr("services.matching.generate_embedding", AsyncMock(return_value=[0.1]))
+
+    proposal = await match_issue_to_task(fake_db, WORKSPACE_ID, issue_row, gemini_key="fake-key")
+
+    assert proposal is None
+
+
+@pytest.mark.asyncio
+async def test_semantic_match_gemini_failure_returns_none_not_raise(fake_db, monkeypatch):
+    _, issue_row = _seed_semantic_fixture(fake_db)
+    monkeypatch.setattr(
+        "services.matching.generate_embedding",
+        AsyncMock(side_effect=Exception("gemini down")),
+    )
+
+    proposal = await match_issue_to_task(fake_db, WORKSPACE_ID, issue_row, gemini_key="fake-key")
+
+    assert proposal is None  # degraded gracefully, no exception
+
+
+@pytest.mark.asyncio
+async def test_semantic_match_empty_rpc_result_returns_none(fake_db, monkeypatch):
+    _, issue_row = _seed_semantic_fixture(fake_db)
+    fake_db.store.rpc_results["match_tasks_by_embedding"] = []
+    monkeypatch.setattr("services.matching.generate_embedding", AsyncMock(return_value=[0.1]))
+
+    proposal = await match_issue_to_task(fake_db, WORKSPACE_ID, issue_row, gemini_key="fake-key")
+
+    assert proposal is None
+
+
+@pytest.mark.asyncio
+async def test_match_issue_to_task_with_no_tasks_in_workspace_returns_none(fake_db, monkeypatch):
+    embed = AsyncMock(return_value=[0.1])
+    monkeypatch.setattr("services.matching.generate_embedding", embed)
+    issue_row = {"id": "gi-1", "number": 1, "title": "Anything", "state": "open"}
+
+    proposal = await match_issue_to_task(fake_db, WORKSPACE_ID, issue_row, gemini_key="fake-key")
+
+    assert proposal is None
+    embed.assert_not_awaited()  # early return before the semantic branch
+
+
+@pytest.mark.asyncio
+async def test_pr_body_with_multiple_issue_refs_skips_missing_ref(fake_db):
+    """'Fixes #1, closes #2' where #1 doesn't exist locally: the loop must
+    continue past the missing ref and match via #2."""
+    issue2 = fake_db.table("github_issues").insert({
+        "workspace_id": WORKSPACE_ID, "number": 2, "title": "Second", "state": "open",
+    }).execute().data[0]
+    task = fake_db.table("tasks").insert({
+        "workspace_id": WORKSPACE_ID, "title": "Linked task", "github_issue_id": issue2["id"],
+    }).execute().data[0]
+    pr_row = fake_db.table("github_prs").insert({
+        "workspace_id": WORKSPACE_ID, "number": 77,
+        "title": "Fixes #1, closes #2", "state": "open",
+    }).execute().data[0]
+
+    proposal = await match_pr_to_task(fake_db, WORKSPACE_ID, pr_row, gemini_key=None)
+
+    assert proposal is not None
+    assert proposal["task_id"] == task["id"]

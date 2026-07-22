@@ -8,6 +8,36 @@ test request handlers without hitting a real Postgres instance.
 import uuid
 from copy import deepcopy
 
+from postgrest.exceptions import APIError
+
+# Mirror of the real Postgres unique constraints/partial indexes that matter to
+# the routers under test. Each entry: (columns, predicate) — the predicate
+# mirrors a partial index's WHERE clause (always-True for full constraints).
+UNIQUE_CONSTRAINTS: dict[str, list[tuple[tuple[str, ...], object]]] = {
+    # uq_workspace_invites_pending (00010): unique pending invite per username per workspace
+    "workspace_invites": [
+        (("workspace_id", "github_username"), lambda row: row.get("status") == "pending"),
+    ],
+    # uq_workspaces_active_repo (00012): a repo can be connected to one active workspace
+    "workspaces": [
+        (
+            ("repo_owner", "repo_name"),
+            lambda row: row.get("repo_owner") is not None and row.get("state") == "active",
+        ),
+    ],
+    # github_webhook_deliveries.delivery_id unique (00013): webhook replay protection
+    "github_webhook_deliveries": [
+        (("delivery_id",), lambda row: True),
+    ],
+}
+
+
+def _unique_violation(table: str, cols: tuple[str, ...]) -> APIError:
+    return APIError({
+        "message": f'duplicate key value violates unique constraint on {table} ({", ".join(cols)})',
+        "code": "23505",
+    })
+
 
 class FakeResult:
     def __init__(self, data):
@@ -114,6 +144,10 @@ class FakeQueryBuilder:
         self._filters.append(("in", col, vals))
         return self
 
+    def ilike(self, col, pattern):
+        self._filters.append(("ilike", col, pattern))
+        return self
+
     def is_(self, col, val):
         is_null = val in (None, "null")
         self._filters.append(("isnull" if is_null != self._negate_next else "notnull", col, None))
@@ -145,11 +179,29 @@ class FakeQueryBuilder:
                 return False
             if op == "in" and row.get(col) not in val:
                 return False
+            if op == "ilike":
+                import fnmatch
+
+                candidate = str(row.get(col) or "").lower()
+                pattern = str(val).lower().replace("%", "*").replace("_", "?")
+                if not fnmatch.fnmatchcase(candidate, pattern):
+                    return False
             if op == "isnull" and row.get(col) is not None:
                 return False
             if op == "notnull" and row.get(col) is None:
                 return False
         return True
+
+    def _assert_unique(self, candidate: dict, rows: list[dict], exclude: dict | None = None):
+        """Raise a 23505 APIError if `candidate` violates a registered unique constraint."""
+        for cols, predicate in UNIQUE_CONSTRAINTS.get(self._table, []):
+            if not predicate(candidate):
+                continue
+            for existing in rows:
+                if existing is exclude:
+                    continue
+                if predicate(existing) and all(existing.get(c) == candidate.get(c) for c in cols):
+                    raise _unique_violation(self._table, cols)
 
     def execute(self) -> FakeResult:
         rows = self._store.rows(self._table)
@@ -160,6 +212,7 @@ class FakeQueryBuilder:
             for payload in payloads:
                 row = {"id": str(uuid.uuid4()), "version": 1, "created_at": "2026-01-01T00:00:00Z"}
                 row.update(deepcopy(payload))
+                self._assert_unique(row, rows)
                 rows.append(row)
                 created.append(deepcopy(row))
             return FakeResult(created)
@@ -175,17 +228,23 @@ class FakeQueryBuilder:
                         None,
                     )
                 if match is not None:
+                    updated = {**match, **deepcopy(payload)}
+                    self._assert_unique(updated, rows, exclude=match)
                     match.update(deepcopy(payload))
                     saved.append(deepcopy(match))
                 else:
                     row = {"id": str(uuid.uuid4()), "version": 1, "created_at": "2026-01-01T00:00:00Z"}
                     row.update(deepcopy(payload))
+                    self._assert_unique(row, rows)
                     rows.append(row)
                     saved.append(deepcopy(row))
             return FakeResult(saved)
 
         if self._op == "update":
             matched = [r for r in rows if self._matches(r)]
+            for row in matched:
+                updated = {**row, **deepcopy(self._payload)}
+                self._assert_unique(updated, rows, exclude=row)
             for row in matched:
                 row.update(deepcopy(self._payload))
             return FakeResult([deepcopy(r) for r in matched])

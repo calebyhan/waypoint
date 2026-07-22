@@ -97,3 +97,82 @@ def test_insights_sorted_by_priority_p0_first(fake_db):
 
     priorities = [i["priority"] for i in insights]
     assert priorities.index("p0") < priorities.index("p2")
+
+
+# --- stale_pr insight ---------------------------------------------------------
+
+
+def seed_pr(fake_db, **overrides):
+    row = {
+        "workspace_id": WORKSPACE_ID,
+        "number": 99,
+        "title": "Long-lived PR",
+        "state": "open",
+        "merged": False,
+        "linked_task_id": None,
+        "created_at": iso(10),
+    }
+    row.update(overrides)
+    fake_db.table("github_prs").insert(row).execute()
+    return row
+
+
+def test_stale_pr_flagged_when_open_more_than_seven_days(fake_db):
+    seed_pr(fake_db, created_at=iso(10))
+
+    insights = generate_insights(fake_db, WORKSPACE_ID)
+
+    stale = [i for i in insights if i["type"] == "stale_pr"]
+    assert len(stale) == 1
+    assert stale[0]["priority"] == "p2"  # no linked task -> default priority
+    assert "#99" in stale[0]["message"]
+
+
+def test_stale_pr_uses_linked_tasks_priority_when_present(fake_db):
+    task = seed_task(fake_db, priority="p0", created_at=iso(1))
+    seed_pr(fake_db, created_at=iso(10), linked_task_id=task["id"])
+
+    insights = generate_insights(fake_db, WORKSPACE_ID)
+
+    stale = [i for i in insights if i["type"] == "stale_pr"]
+    assert len(stale) == 1
+    assert stale[0]["priority"] == "p0"
+    assert stale[0]["task_id"] == task["id"]
+
+
+def test_no_stale_pr_when_pr_is_recent(fake_db):
+    seed_pr(fake_db, created_at=iso(1))
+
+    insights = generate_insights(fake_db, WORKSPACE_ID)
+
+    assert not any(i["type"] == "stale_pr" for i in insights)
+
+
+def test_merged_or_closed_prs_are_never_flagged_stale(fake_db):
+    seed_pr(fake_db, state="closed", created_at=iso(30))
+
+    insights = generate_insights(fake_db, WORKSPACE_ID)
+
+    assert not any(i["type"] == "stale_pr" for i in insights)
+
+
+async def test_generate_insights_for_all_workspaces_isolates_failures(fake_db, monkeypatch):
+    from services.insights import generate_insights_for_all_workspaces
+
+    fake_db.seed("workspaces", [
+        {"id": "ws-boom", "state": "active"},
+        {"id": "ws-ok", "state": "active"},
+        {"id": "ws-archived", "state": "archived"},
+    ])
+    seen = []
+
+    def fake_generate(db, workspace_id):
+        if workspace_id == "ws-boom":
+            raise RuntimeError("simulated")
+        seen.append(workspace_id)
+
+    monkeypatch.setattr("services.insights.generate_insights", fake_generate)
+
+    await generate_insights_for_all_workspaces(fake_db)  # must not raise
+
+    assert seen == ["ws-ok"]  # archived workspaces are skipped, failures isolated
