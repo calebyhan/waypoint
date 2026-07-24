@@ -48,7 +48,8 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { useSession } from "@/hooks/use-session";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, type ApiError } from "@/lib/api";
+import { ErrorState } from "@/components/ui/error-state";
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
 
@@ -75,7 +76,8 @@ function formatRelativeDate(dateString: string): string {
   if (diffDays === 1) return "Yesterday";
   if (diffDays < 7) return `${diffDays}d ago`;
   if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  // Explicit locale + timeZone so server and client render identical text (no hydration mismatch).
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 function SkeletonCard() {
@@ -108,7 +110,7 @@ export default function WorkspacesPage() {
   const [sortField, setSortField] = useState<SortField>("created_at");
   const [deleteTarget, setDeleteTarget] = useState<Workspace | null>(null);
 
-  const { data: workspaces = [], isLoading } = useQuery<Workspace[]>({
+  const { data: workspaces = [], isLoading, error } = useQuery<Workspace[], ApiError>({
     queryKey: ["workspaces", stateFilter],
     queryFn: () =>
       apiFetch(
@@ -231,6 +233,18 @@ export default function WorkspacesPage() {
           <SkeletonCard />
           <SkeletonCard />
         </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="mx-auto max-w-4xl p-8">
+        <h1 className="text-2xl font-bold">Workspaces</h1>
+        <ErrorState
+          message={error.detail}
+          onRetry={() => queryClient.invalidateQueries({ queryKey: ["workspaces"] })}
+        />
       </div>
     );
   }
@@ -360,23 +374,33 @@ export default function WorkspacesPage() {
         <div className="mt-2 grid gap-3">
           {filtered.map((ws) => {
             const isArchived = ws.state === "archived";
+            const openWorkspace = () => {
+              if (isArchived) return;
+              router.push(
+                ws.has_ingestion
+                  ? `/workspaces/${ws.id}/dashboard`
+                  : ws.repo_owner
+                    ? `/workspaces/${ws.id}/ingest`
+                    : `/workspaces/${ws.id}/setup`,
+              );
+            };
             return (
               <Card
                 key={ws.id}
+                role="button"
+                tabIndex={isArchived ? -1 : 0}
+                aria-label={`Open workspace ${ws.name}`}
                 className={
                   isArchived
                     ? "opacity-60"
                     : "cursor-pointer transition-colors hover:bg-muted/50"
                 }
-                onClick={() => {
-                  if (isArchived) return;
-                  router.push(
-                    ws.has_ingestion
-                      ? `/workspaces/${ws.id}/dashboard`
-                      : ws.repo_owner
-                        ? `/workspaces/${ws.id}/ingest`
-                        : `/workspaces/${ws.id}/setup`,
-                  );
+                onClick={openWorkspace}
+                onKeyDown={(e) => {
+                  if (!isArchived && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    openWorkspace();
+                  }
                 }}
               >
                 <CardHeader>
@@ -390,6 +414,8 @@ export default function WorkspacesPage() {
                         <DropdownMenuTrigger
                           render={
                             <button
+                              type="button"
+                              aria-label={`Workspace actions for ${ws.name}`}
                               className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                               onClick={(e) => e.stopPropagation()}
                             >

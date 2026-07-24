@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useSession } from "@/hooks/use-session";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, type ApiError } from "@/lib/api";
+import { ErrorState } from "@/components/ui/error-state";
 import { reconnectGithub } from "@/lib/reconnect-github";
 import { toast } from "sonner";
 
@@ -22,7 +24,11 @@ interface Profile {
   id: string;
   github_username: string;
   avatar_url: string | null;
-  gemini_api_key: string | null;
+  // The backend may return the raw key, a masked placeholder, or omit it in
+  // favor of a has_gemini_key boolean. Treat any non-empty value as "key is set"
+  // and never render the stored value back into the input.
+  gemini_api_key?: string | boolean | null;
+  has_gemini_key?: boolean;
 }
 
 export default function SettingsPage() {
@@ -41,13 +47,21 @@ export default function SettingsPage() {
     }
   };
 
-  const { data: profile, isLoading } = useQuery<Profile>({
+  const { data: profile, isLoading, error } = useQuery<Profile, ApiError>({
     queryKey: ["profile"],
     queryFn: () => apiFetch("/auth/me", { token: session!.access_token }),
     enabled: !!session,
   });
 
-  const apiKey = editedKey ?? profile?.gemini_api_key ?? "";
+  // Tolerates both response shapes: has_gemini_key boolean, or gemini_api_key
+  // as a raw/masked string or boolean.
+  const hasStoredKey = Boolean(
+    profile?.has_gemini_key ??
+      (typeof profile?.gemini_api_key === "string"
+        ? profile.gemini_api_key.length > 0
+        : profile?.gemini_api_key),
+  );
+  const apiKey = editedKey ?? "";
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -57,11 +71,21 @@ export default function SettingsPage() {
         body: JSON.stringify({ gemini_api_key: apiKey.trim() }),
       }),
     onSuccess: () => {
+      setEditedKey(null);
       queryClient.invalidateQueries({ queryKey: ["profile"] });
       toast.success("API key saved");
     },
     onError: () => toast.error("Failed to save API key"),
   });
+
+  if (error) {
+    return (
+      <ErrorState
+        message={error.detail}
+        onRetry={() => queryClient.invalidateQueries({ queryKey: ["profile"] })}
+      />
+    );
+  }
 
   if (sessionLoading || isLoading) {
     return (
@@ -87,9 +111,11 @@ export default function SettingsPage() {
         <CardContent className="space-y-4">
           <div className="flex items-center gap-3">
             {profile?.avatar_url && (
-              <img
+              <Image
                 src={profile.avatar_url}
-                alt={profile.github_username}
+                alt={`${profile.github_username}'s GitHub avatar`}
+                width={40}
+                height={40}
                 className="h-10 w-10 rounded-full"
               />
             )}
@@ -120,10 +146,15 @@ export default function SettingsPage() {
             <Input
               id="api-key"
               type="password"
-              placeholder="AIza..."
+              placeholder={hasStoredKey ? "Key saved — enter a new key to replace it" : "AIza..."}
               value={apiKey}
               onChange={(e) => setEditedKey(e.target.value)}
             />
+            {hasStoredKey && (
+              <p className="text-xs text-muted-foreground">
+                A Gemini API key is saved. For security it is never displayed here.
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               Get a free key at{" "}
               <a

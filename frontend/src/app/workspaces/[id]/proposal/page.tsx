@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,9 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { useSession } from "@/hooks/use-session";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, type ApiError } from "@/lib/api";
+import { ErrorState } from "@/components/ui/error-state";
+import { PRIORITY_COLORS } from "@/lib/priority-colors";
 import { toast } from "sonner";
 
 interface Task {
@@ -68,12 +70,6 @@ interface PlanResponse {
   decomposition?: { summary?: string; epics: DecompositionEpic[] };
 }
 
-const PRIORITY_COLORS: Record<string, string> = {
-  p0: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-  p1: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
-  p2: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
-};
-
 export default function ProposalPage() {
   const { id } = useParams<{ id: string }>();
   const { session } = useSession();
@@ -84,7 +80,7 @@ export default function ProposalPage() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [localTasks, setLocalTasks] = useState<Map<string, Partial<Task>>>(new Map());
 
-  const { data: plan, isLoading } = useQuery<PlanResponse>({
+  const { data: plan, isLoading, error } = useQuery<PlanResponse, ApiError>({
     queryKey: ["plan", id],
     queryFn: () => apiFetch(`/workspaces/${id}/plan`, { token: session!.access_token }),
     enabled: !!session,
@@ -197,6 +193,15 @@ export default function ProposalPage() {
     [localTasks, updateTaskMutation],
   );
 
+  if (error) {
+    return (
+      <ErrorState
+        message={error.detail}
+        onRetry={() => queryClient.invalidateQueries({ queryKey: ["plan", id] })}
+      />
+    );
+  }
+
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -222,10 +227,19 @@ export default function ProposalPage() {
           </Card>
         )}
         {decomposition.epics.map((epic, ei) => (
-          <Card key={ei}>
+          <Card key={`${epic.title}-${ei}`}>
             <CardHeader
               className="cursor-pointer"
+              role="button"
+              tabIndex={0}
+              aria-expanded={!collapsed.has(`d-${ei}`)}
               onClick={() => toggleCollapse(`d-${ei}`)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggleCollapse(`d-${ei}`);
+                }
+              }}
             >
               <CardTitle className="flex items-center justify-between">
                 <span>{epic.title}</span>
@@ -288,6 +302,25 @@ export default function ProposalPage() {
   };
 
   const renderPlan = () => {
+    if (epics.length === 0) {
+      return (
+        <div className="rounded-lg border border-dashed border-border py-12 text-center">
+          <p className="text-sm text-muted-foreground">
+            No epics in this plan yet — add one below.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-4"
+            onClick={() => {
+              const title = prompt("Epic title:");
+              if (title) createEpicMutation.mutate(title);
+            }}
+          >
+            + Add Epic
+          </Button>
+        </div>
+      );
+    }
     return (
       <div className="space-y-6">
         {epics.map((epic) => {
@@ -296,7 +329,16 @@ export default function ProposalPage() {
             <Card key={epic.id}>
               <CardHeader
                 className="cursor-pointer"
+                role="button"
+                tabIndex={0}
+                aria-expanded={!collapsed.has(epic.id)}
                 onClick={() => toggleCollapse(epic.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleCollapse(epic.id);
+                  }
+                }}
               >
                 <CardTitle className="flex items-center justify-between">
                   <span>{epic.title}</span>
@@ -392,12 +434,13 @@ export default function ProposalPage() {
                         ) : (
                           <>
                             <div className="flex items-start justify-between">
-                              <h4
-                                className="font-medium cursor-pointer hover:text-primary"
+                              <button
+                                type="button"
+                                className="text-left font-medium hover:text-primary"
                                 onClick={() => setEditingTask(task.id)}
                               >
                                 {task.title}
-                              </h4>
+                              </button>
                               <div className="flex gap-2 items-center">
                                 <Badge className={PRIORITY_COLORS[task.priority]}>
                                   {task.priority}

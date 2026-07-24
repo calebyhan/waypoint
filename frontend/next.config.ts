@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  images: {
+    // GitHub avatars shown on the account settings page.
+    remotePatterns: [new URL("https://avatars.githubusercontent.com/**")],
+  },
 };
 
 export default nextConfig;

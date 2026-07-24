@@ -12,7 +12,9 @@ import {
 } from "@/components/ui/card";
 import { useSession } from "@/hooks/use-session";
 import { useRealtimeDashboard } from "@/hooks/use-realtime-dashboard";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, type ApiError } from "@/lib/api";
+import { ErrorState } from "@/components/ui/error-state";
+import { PRIORITY_COLORS } from "@/lib/priority-colors";
 import { toast } from "sonner";
 import { GanttChart } from "@/components/gantt";
 import type { GanttTask, GanttEpic, ScheduleChange } from "@/components/gantt";
@@ -88,12 +90,6 @@ interface DashboardResponse {
   unlinked_prs: GithubRef[];
 }
 
-const INSIGHT_PRIORITY_COLORS: Record<string, string> = {
-  p0: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-  p1: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
-  p2: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
-};
-
 function DashboardSkeleton() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
@@ -142,7 +138,7 @@ export default function DashboardPage() {
     enabled: !!session,
   });
 
-  const { data, isLoading } = useQuery<DashboardResponse>({
+  const { data, isLoading, error } = useQuery<DashboardResponse, ApiError>({
     queryKey: ["dashboard", id],
     queryFn: () => apiFetch(`/workspaces/${id}/dashboard`, { token: session!.access_token }),
     enabled: !!session,
@@ -240,6 +236,15 @@ export default function DashboardPage() {
     setSelectedTaskId((prev) => (prev === taskId ? null : taskId));
   }, []);
 
+  if (error) {
+    return (
+      <ErrorState
+        message={error.detail}
+        onRetry={() => queryClient.invalidateQueries({ queryKey: ["dashboard", id] })}
+      />
+    );
+  }
+
   if (isLoading || !data) {
     return <DashboardSkeleton />;
   }
@@ -283,6 +288,7 @@ export default function DashboardPage() {
           <Button
             variant="ghost"
             size="icon-sm"
+            aria-label="Back to workspaces"
             onClick={() => router.push("/workspaces")}
           >
             <ArrowLeft className="h-4 w-4" />
@@ -291,7 +297,12 @@ export default function DashboardPage() {
             {workspace?.name ?? "Dashboard"}
           </h1>
         </div>
-        <Button variant="ghost" size="icon-sm" onClick={() => router.push(`/workspaces/${id}/settings`)}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Workspace settings"
+          onClick={() => router.push(`/workspaces/${id}/settings`)}
+        >
           <Settings className="h-4 w-4" />
         </Button>
       </div>
@@ -308,10 +319,13 @@ export default function DashboardPage() {
                   Insights
                 </h2>
                 <div className="flex gap-3 overflow-x-auto pb-1">
-                  {insights.map((insight, i) => (
-                    <Card key={i} className="min-w-[260px] shrink-0">
+                  {insights.map((insight) => (
+                    <Card
+                      key={`${insight.type}:${insight.task_id ?? ""}:${insight.message}`}
+                      className="min-w-[260px] shrink-0"
+                    >
                       <CardContent className="p-3 space-y-1">
-                        <Badge className={INSIGHT_PRIORITY_COLORS[insight.priority]} variant="secondary">
+                        <Badge className={PRIORITY_COLORS[insight.priority]} variant="secondary">
                           {insight.type.replaceAll("_", " ")}
                         </Badge>
                         <p className="text-sm">{insight.message}</p>
@@ -368,6 +382,18 @@ export default function DashboardPage() {
               </div>
             )}
 
+            {/* Empty state */}
+            {data.tasks.length === 0 && (
+              <div className="rounded-lg border border-dashed border-border py-12 text-center">
+                <p className="text-sm text-muted-foreground">
+                  No tasks yet. Approve a plan from the Proposal screen or re-ingest a PRD to
+                  populate this workspace.
+                </p>
+              </div>
+            )}
+
+            {data.tasks.length > 0 && (
+              <>
             {/* Summary stats */}
             <SummaryStats tasks={ganttTasks} />
 
@@ -416,6 +442,8 @@ export default function DashboardPage() {
                 filterPriority={filterPriority || undefined}
               />
             </div>
+              </>
+            )}
           </div>
         </div>
 

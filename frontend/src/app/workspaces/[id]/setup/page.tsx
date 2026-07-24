@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { useSession } from "@/hooks/use-session";
 import { apiFetch, ApiError } from "@/lib/api";
+import { ErrorState } from "@/components/ui/error-state";
 import { reconnectGithub } from "@/lib/reconnect-github";
 import { toast } from "sonner";
 import { Plus, Trash2 } from "lucide-react";
@@ -41,6 +42,8 @@ interface TeamMember {
   name: string;
   role: string;
   weekly_capacity_hours: number;
+  /** Stable client-side key for list rendering (rows can be removed from the middle). */
+  _key?: string;
 }
 
 interface Repo {
@@ -66,7 +69,7 @@ export default function WorkspaceSetupPage() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [teamDirty, setTeamDirty] = useState(false);
 
-  const { data: workspace } = useQuery<Workspace>({
+  const { data: workspace, error: wsError } = useQuery<Workspace, ApiError>({
     queryKey: ["workspace", id],
     queryFn: () =>
       apiFetch(`/workspaces/${id}`, { token: session!.access_token }),
@@ -109,6 +112,7 @@ export default function WorkspaceSetupPage() {
           name: m.name,
           role: m.role,
           weekly_capacity_hours: m.weekly_capacity_hours,
+          _key: crypto.randomUUID(),
         })),
       );
     }
@@ -120,7 +124,13 @@ export default function WorkspaceSetupPage() {
         method: "PUT",
         token: session!.access_token,
         body: JSON.stringify({
-          members: teamMembers.filter((m) => m.name.trim()),
+          members: teamMembers
+            .filter((m) => m.name.trim())
+            .map(({ name, role, weekly_capacity_hours }) => ({
+              name,
+              role,
+              weekly_capacity_hours,
+            })),
         }),
       }),
     onSuccess: () => {
@@ -134,7 +144,7 @@ export default function WorkspaceSetupPage() {
   const addMember = () => {
     setTeamMembers((prev) => [
       ...prev,
-      { name: "", role: "fullstack", weekly_capacity_hours: 40 },
+      { name: "", role: "fullstack", weekly_capacity_hours: 40, _key: crypto.randomUUID() },
     ]);
     setTeamDirty(true);
   };
@@ -161,6 +171,8 @@ export default function WorkspaceSetupPage() {
       });
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["workspace", id] });
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       toast.success("Repository connected");
     },
     onError: () => toast.error("Failed to connect repository"),
@@ -172,6 +184,15 @@ export default function WorkspaceSetupPage() {
       : "";
 
   const isConnected = workspace?.repo_owner || connectMutation.isSuccess;
+
+  if (wsError) {
+    return (
+      <ErrorState
+        message={wsError.detail}
+        onRetry={() => queryClient.invalidateQueries({ queryKey: ["workspace", id] })}
+      />
+    );
+  }
 
   return (
     <div className="mx-auto max-w-2xl p-8 space-y-6">
@@ -289,7 +310,7 @@ export default function WorkspaceSetupPage() {
                 </p>
               )}
               {teamMembers.map((member, i) => (
-                <div key={i} className="flex items-end gap-2">
+                <div key={member._key ?? member.name} className="flex items-end gap-2">
                   <div className="flex-1 space-y-1.5">
                     {i === 0 && <Label>Name</Label>}
                     <Input
@@ -331,6 +352,7 @@ export default function WorkspaceSetupPage() {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label={`Remove team member ${member.name || "row"}`}
                     onClick={() => removeMember(i)}
                     className="shrink-0"
                   >

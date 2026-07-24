@@ -22,8 +22,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useSession } from "@/hooks/use-session";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
+import { ErrorState } from "@/components/ui/error-state";
 import { toast } from "sonner";
+
+/** Surface the backend's ApiError.detail in toasts so distinct failure modes read distinctly. */
+function toastApiError(fallback: string) {
+  return (e: unknown) => {
+    toast.error(e instanceof ApiError && e.detail ? e.detail : fallback);
+  };
+}
 
 const ROLES = [
   { value: "frontend", label: "Frontend" },
@@ -61,6 +69,8 @@ interface TeamMember {
   role: string;
   weekly_capacity_hours: number;
   user_id?: string | null;
+  /** Stable client-side key for list rendering (rows can be removed from the middle). */
+  _key?: string;
 }
 
 interface Member {
@@ -97,7 +107,7 @@ export default function SettingsPage() {
   const [inviteUsername, setInviteUsername] = useState("");
   const [inviteRole, setInviteRole] = useState<"pm" | "member">("member");
 
-  const { data: workspace, isLoading: wsLoading } = useQuery<Workspace>({
+  const { data: workspace, isLoading: wsLoading, error: wsError } = useQuery<Workspace, ApiError>({
     queryKey: ["workspace", id],
     queryFn: () => apiFetch(`/workspaces/${id}`, { token: session!.access_token }),
     enabled: !!session,
@@ -140,7 +150,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (existingTeam && !teamDirty) {
-      setTeamMembers(existingTeam.map((m) => ({ ...m })));
+      setTeamMembers(existingTeam.map((m) => ({ ...m, _key: m.id ?? crypto.randomUUID() })));
     }
   }, [existingTeam, teamDirty]);
 
@@ -155,7 +165,7 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["workspace", id] });
       toast.success("Workspace renamed");
     },
-    onError: () => toast.error("Failed to rename workspace"),
+    onError: toastApiError("Failed to rename workspace"),
   });
 
   const teamSyncMutation = useMutation({
@@ -179,7 +189,7 @@ export default function SettingsPage() {
       setTeamDirty(false);
       toast.success("Team saved");
     },
-    onError: () => toast.error("Failed to save team"),
+    onError: toastApiError("Failed to save team"),
   });
 
   const inviteMutation = useMutation({
@@ -194,7 +204,7 @@ export default function SettingsPage() {
       setInviteUsername("");
       toast.success("Invite sent");
     },
-    onError: () => toast.error("Failed to create invite"),
+    onError: toastApiError("Failed to create invite"),
   });
 
   const revokeInviteMutation = useMutation({
@@ -207,6 +217,7 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["invites", id] });
       toast.success("Invite revoked");
     },
+    onError: toastApiError("Failed to revoke invite"),
   });
 
   const updateRoleMutation = useMutation({
@@ -220,7 +231,7 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["members", id] });
       toast.success("Role updated");
     },
-    onError: () => toast.error("Failed to update role"),
+    onError: toastApiError("Failed to update role"),
   });
 
   const removeMemberMutation = useMutation({
@@ -233,6 +244,7 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["members", id] });
       toast.success("Member removed");
     },
+    onError: toastApiError("Failed to remove member"),
   });
 
   const linkTeamMemberMutation = useMutation({
@@ -246,7 +258,7 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["team", id] });
       toast.success("Linked to account");
     },
-    onError: () => toast.error("Failed to link account"),
+    onError: toastApiError("Failed to link account"),
   });
 
   const rescheduleMutation = useMutation({
@@ -266,7 +278,7 @@ export default function SettingsPage() {
       setScheduleDirty(false);
       toast.success("Timeline restructured");
     },
-    onError: () => toast.error("Failed to restructure timeline"),
+    onError: toastApiError("Failed to restructure timeline"),
   });
 
   const archiveMutation = useMutation({
@@ -276,9 +288,11 @@ export default function SettingsPage() {
         token: session!.access_token,
       }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       toast.success("Workspace archived");
       router.push("/workspaces");
     },
+    onError: toastApiError("Failed to archive workspace"),
   });
 
   const deleteMutation = useMutation({
@@ -288,13 +302,18 @@ export default function SettingsPage() {
         token: session!.access_token,
       }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       toast.success("Workspace deleted");
       router.push("/workspaces");
     },
+    onError: toastApiError("Failed to delete workspace"),
   });
 
   const addMember = useCallback(() => {
-    setTeamMembers((prev) => [...prev, { name: "", role: "fullstack", weekly_capacity_hours: 40 }]);
+    setTeamMembers((prev) => [
+      ...prev,
+      { name: "", role: "fullstack", weekly_capacity_hours: 40, _key: crypto.randomUUID() },
+    ]);
     setTeamDirty(true);
   }, []);
 
@@ -307,6 +326,15 @@ export default function SettingsPage() {
     setTeamMembers((prev) => prev.filter((_, i) => i !== index));
     setTeamDirty(true);
   }, []);
+
+  if (wsError) {
+    return (
+      <ErrorState
+        message={wsError.detail}
+        onRetry={() => queryClient.invalidateQueries({ queryKey: ["workspace", id] })}
+      />
+    );
+  }
 
   if (wsLoading || teamLoading) {
     return (
@@ -324,6 +352,7 @@ export default function SettingsPage() {
           <Button
             variant="ghost"
             size="icon-sm"
+            aria-label="Back to dashboard"
             onClick={() => router.push(`/workspaces/${id}/dashboard`)}
           >
             <ArrowLeft className="h-4 w-4" />
@@ -410,7 +439,11 @@ export default function SettingsPage() {
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      onClick={() => removeMemberMutation.mutate(m.user_id)}
+                      aria-label={`Remove ${m.github_username ?? m.user_id} from the workspace`}
+                      onClick={() => {
+                        if (confirm(`Remove ${m.github_username ?? "this member"} from the workspace?`))
+                          removeMemberMutation.mutate(m.user_id);
+                      }}
                     >
                       <X className="h-4 w-4 text-muted-foreground" />
                     </Button>
@@ -426,8 +459,13 @@ export default function SettingsPage() {
                       value={inviteUsername}
                       onChange={(e) => setInviteUsername(e.target.value)}
                       className="flex-1"
+                      disabled={inviteMutation.isPending}
                     />
-                    <Select value={inviteRole} onValueChange={(v) => v && setInviteRole(v as "pm" | "member")}>
+                    <Select
+                      value={inviteRole}
+                      onValueChange={(v) => v && setInviteRole(v as "pm" | "member")}
+                      disabled={inviteMutation.isPending}
+                    >
                       <SelectTrigger className="w-32">
                         <SelectValue />
                       </SelectTrigger>
@@ -445,7 +483,7 @@ export default function SettingsPage() {
                     </Button>
                   </div>
 
-                  {invites && invites.length > 0 && (
+                  {invites && invites.length > 0 ? (
                     <div className="space-y-1.5 pt-1">
                       {invites.map((inv) => (
                         <div key={inv.id} className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -455,13 +493,19 @@ export default function SettingsPage() {
                           <Button
                             variant="ghost"
                             size="icon-sm"
-                            onClick={() => revokeInviteMutation.mutate(inv.id)}
+                            aria-label={`Revoke invite for ${inv.github_username}`}
+                            onClick={() => {
+                              if (confirm(`Revoke invite for ${inv.github_username}?`))
+                                revokeInviteMutation.mutate(inv.id);
+                            }}
                           >
                             <X className="h-4 w-4" />
                           </Button>
                         </div>
                       ))}
                     </div>
+                  ) : (
+                    <p className="pt-1 text-xs text-muted-foreground">No pending invites.</p>
                   )}
                 </>
               )}
@@ -478,7 +522,7 @@ export default function SettingsPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               {teamMembers.map((member, i) => (
-                <div key={i} className="flex items-center gap-2">
+                <div key={member._key ?? member.id ?? member.name} className="flex items-center gap-2">
                   <Input
                     placeholder="Name"
                     value={member.name}
@@ -537,6 +581,7 @@ export default function SettingsPage() {
                     <Button
                       variant="ghost"
                       size="icon-sm"
+                      aria-label={`Remove team member ${member.name || "row"}`}
                       onClick={() => removeMember(i)}
                     >
                       <Trash2 className="h-4 w-4 text-muted-foreground" />
@@ -650,9 +695,9 @@ export default function SettingsPage() {
           </Card>
 
           {/* Danger Zone */}
-          <Card className="border-red-200 dark:border-red-900">
+          <Card className="border-destructive/30">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-red-600 dark:text-red-400">
+              <CardTitle className="flex items-center gap-2 text-destructive">
                 <AlertTriangle className="h-4 w-4" />
                 Danger Zone
               </CardTitle>
@@ -686,7 +731,7 @@ export default function SettingsPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="border-red-300 text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+                  className="border-destructive/40 text-destructive hover:bg-destructive/10"
                   onClick={() => {
                     if (confirm("Delete this workspace permanently? This cannot be undone."))
                       deleteMutation.mutate();
