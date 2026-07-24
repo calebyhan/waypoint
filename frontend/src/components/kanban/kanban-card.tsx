@@ -2,12 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import type { GanttTask } from "@/components/gantt";
-
-const PRIORITY_COLORS: Record<string, string> = {
-  p0: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-  p1: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
-  p2: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
-};
+import { PRIORITY_COLORS } from "@/lib/priority-colors";
 
 function GithubBadge({ number, state, href }: { number: number; state: string; href?: string | null }) {
   const isOpen = state === "open";

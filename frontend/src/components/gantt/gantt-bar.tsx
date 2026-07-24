@@ -1,12 +1,7 @@
 "use client";
 
 import type { GanttTask } from "./gantt-types";
-
-const PRIORITY_COLORS: Record<string, string> = {
-  p0: "bg-red-500/80 hover:bg-red-500",
-  p1: "bg-amber-500/80 hover:bg-amber-500",
-  p2: "bg-slate-400/80 hover:bg-slate-400",
-};
+import { PRIORITY_BAR_COLORS } from "@/lib/priority-colors";
 
 const STATUS_PATTERNS: Record<string, string> = {
   done: "opacity-60",
@@ -37,7 +32,7 @@ export function GanttBar({
   onMouseDownResize,
   onClick,
 }: GanttBarProps) {
-  const colorClass = PRIORITY_COLORS[task.priority] ?? PRIORITY_COLORS.p1;
+  const colorClass = PRIORITY_BAR_COLORS[task.priority] ?? PRIORITY_BAR_COLORS.p1;
   const statusClass = STATUS_PATTERNS[task.status] ?? "";
 
   return (
