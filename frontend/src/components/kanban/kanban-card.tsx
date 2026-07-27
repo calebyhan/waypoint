@@ -42,9 +42,18 @@ export function KanbanCard({
   return (
     <div
       draggable
+      role="button"
+      tabIndex={0}
+      aria-label={`${task.title}, priority ${task.priority}, ${task.assignee ?? "unassigned"}`}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
       className={`cursor-grab space-y-2 rounded-lg border border-border bg-card p-3 shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing ${
         isDragging ? "opacity-40" : ""
       }`}

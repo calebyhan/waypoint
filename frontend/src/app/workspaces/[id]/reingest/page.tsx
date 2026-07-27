@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -51,6 +51,7 @@ export default function ReingestPage() {
   const { id } = useParams<{ id: string }>();
   const { session } = useSession();
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   const [content, setContent] = useState("");
   const [diff, setDiff] = useState<DiffResult | null>(null);
@@ -91,6 +92,10 @@ export default function ReingestPage() {
       });
     },
     onSuccess: () => {
+      // The applied diff changes tasks/epics, so refresh everything derived from them.
+      queryClient.invalidateQueries({ queryKey: ["dashboard", id] });
+      queryClient.invalidateQueries({ queryKey: ["plan", id] });
+      queryClient.invalidateQueries({ queryKey: ["insights", id] });
       toast.success("Plan updated");
       router.push(`/workspaces/${id}/dashboard`);
     },
@@ -145,8 +150,8 @@ export default function ReingestPage() {
             <CardDescription>Scope changed — review carefully</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {diff.modified.map((entry, i) => (
-              <div key={i} className="rounded-lg border p-3 space-y-1">
+            {diff.modified.map((entry) => (
+              <div key={entry.existing_task!.id} className="rounded-lg border p-3 space-y-1">
                 <div className="flex items-center justify-between">
                   <p className="font-medium">{entry.new_task!.title}</p>
                   <Badge variant="secondary">was: {entry.existing_task!.title}</Badge>
@@ -170,9 +175,13 @@ export default function ReingestPage() {
           </CardHeader>
           <CardContent className="space-y-2">
             {diff.added.map((entry, i) => (
-              <div key={i} className="flex items-start gap-2 rounded-lg border p-3">
+              <div
+                key={`${entry.new_task!.epic_title}:${entry.new_task!.title}`}
+                className="flex items-start gap-2 rounded-lg border p-3"
+              >
                 <input
                   type="checkbox"
+                  aria-label={`Include new task: ${entry.new_task!.title}`}
                   checked={!addedExcluded.has(i)}
                   onChange={(e) => {
                     setAddedExcluded((prev) => {
@@ -200,10 +209,14 @@ export default function ReingestPage() {
             <CardTitle className="text-base text-red-700">Removed Tasks</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            {diff.removed.map((entry, i) => (
-              <div key={i} className="flex items-start gap-2 rounded-lg border p-3">
+            {diff.removed.map((entry) => (
+              <div
+                key={entry.existing_task!.id}
+                className="flex items-start gap-2 rounded-lg border p-3"
+              >
                 <input
                   type="checkbox"
+                  aria-label={`Remove existing task: ${entry.existing_task!.title}`}
                   checked={removedIds.has(entry.existing_task!.id)}
                   onChange={(e) => {
                     setRemovedIds((prev) => {

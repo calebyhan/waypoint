@@ -289,6 +289,8 @@ export function GanttChart({
   return (
     <div
       ref={containerRef}
+      role="region"
+      aria-label="Gantt chart"
       className="relative overflow-auto rounded-lg border border-border bg-card"
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}

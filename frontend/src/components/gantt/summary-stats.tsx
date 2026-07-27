@@ -46,7 +46,7 @@ export function SummaryStats({ tasks }: SummaryStatsProps) {
           </div>
           <div className="mt-1 h-1.5 w-full rounded-full bg-muted">
             <div
-              className="h-full rounded-full bg-emerald-500 transition-all"
+              className="h-full rounded-full bg-emerald-500 transition-[width]"
               style={{ width: `${progressPct}%` }}
             />
           </div>

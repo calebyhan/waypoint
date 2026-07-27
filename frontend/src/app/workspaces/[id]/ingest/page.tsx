@@ -41,6 +41,8 @@ interface TeamMember {
   name: string;
   role: string;
   weekly_capacity_hours: number;
+  /** Stable client-side key for list rendering (rows can be removed from the middle). */
+  _key?: string;
 }
 
 interface Question {
@@ -49,6 +51,12 @@ interface Question {
 }
 
 type Step = "team" | "config" | "prd" | "questions" | "loading";
+
+const STEPS = [
+  { key: "team", label: "Team", icon: Users },
+  { key: "config", label: "Project", icon: Settings },
+  { key: "prd", label: "PRD", icon: FileText },
+] as const;
 
 export default function IngestPage() {
   const { id } = useParams<{ id: string }>();
@@ -85,6 +93,7 @@ export default function IngestPage() {
           name: m.name,
           role: m.role,
           weekly_capacity_hours: m.weekly_capacity_hours,
+          _key: crypto.randomUUID(),
         })),
       );
     }
@@ -93,7 +102,7 @@ export default function IngestPage() {
   const addMember = () => {
     setTeamMembers((prev) => [
       ...prev,
-      { name: "", role: "fullstack", weekly_capacity_hours: 40 },
+      { name: "", role: "fullstack", weekly_capacity_hours: 40, _key: crypto.randomUUID() },
     ]);
   };
 
@@ -109,7 +118,9 @@ export default function IngestPage() {
 
   const syncTeam = useCallback(async () => {
     if (!session) return;
-    const validMembers = teamMembers.filter((m) => m.name.trim());
+    const validMembers = teamMembers
+      .filter((m) => m.name.trim())
+      .map(({ name, role, weekly_capacity_hours }) => ({ name, role, weekly_capacity_hours }));
     try {
       await apiFetch(`/workspaces/${id}/team/sync`, {
         method: "PUT",
@@ -127,7 +138,9 @@ export default function IngestPage() {
       setAnalyzing(true);
       setStep("loading");
 
-      const validMembers = teamMembers.filter((m) => m.name.trim());
+      const validMembers = teamMembers
+      .filter((m) => m.name.trim())
+      .map(({ name, role, weekly_capacity_hours }) => ({ name, role, weekly_capacity_hours }));
       const bodyContext = {
         ...context,
         team_size: validMembers.length > 0 ? `${validMembers.length} engineers` : context.team_size,
@@ -220,7 +233,9 @@ export default function IngestPage() {
     setAnalyzing(true);
     setStep("loading");
 
-    const validMembers = teamMembers.filter((m) => m.name.trim());
+    const validMembers = teamMembers
+      .filter((m) => m.name.trim())
+      .map(({ name, role, weekly_capacity_hours }) => ({ name, role, weekly_capacity_hours }));
     const bodyContext = {
       ...context,
       team_size: validMembers.length > 0 ? `${validMembers.length} engineers` : context.team_size,
@@ -250,11 +265,6 @@ export default function IngestPage() {
   }, [id, session, content, context, answers, router, teamMembers]);
 
   const stepIndex = ["team", "config", "prd", "questions", "loading"].indexOf(step);
-  const steps = [
-    { key: "team", label: "Team", icon: Users },
-    { key: "config", label: "Project", icon: Settings },
-    { key: "prd", label: "PRD", icon: FileText },
-  ];
 
   return (
     <div className="mx-auto max-w-2xl p-8 space-y-6">
@@ -267,10 +277,11 @@ export default function IngestPage() {
 
       {/* Step indicator */}
       <div className="flex items-center gap-2">
-        {steps.map((s, i) => (
+        {STEPS.map((s, i) => (
           <div key={s.key} className="flex items-center gap-2">
             {i > 0 && <div className="h-px w-8 bg-border" />}
             <button
+              type="button"
               onClick={() => {
                 if (i <= stepIndex && step !== "loading") setStep(s.key as Step);
               }}
@@ -305,7 +316,7 @@ export default function IngestPage() {
               </p>
             )}
             {teamMembers.map((member, i) => (
-              <div key={i} className="flex items-end gap-2">
+              <div key={member._key ?? member.name} className="flex items-end gap-2">
                 <div className="flex-1 space-y-1.5">
                   {i === 0 && <Label>Name</Label>}
                   <Input
@@ -347,6 +358,7 @@ export default function IngestPage() {
                 <Button
                   variant="ghost"
                   size="icon"
+                  aria-label={`Remove team member ${member.name || "row"}`}
                   onClick={() => removeMember(i)}
                   className="shrink-0"
                 >
@@ -388,8 +400,8 @@ export default function IngestPage() {
               <div className="flex flex-wrap gap-1.5 pb-2">
                 {teamMembers
                   .filter((m) => m.name.trim())
-                  .map((m, i) => (
-                    <Badge key={i} variant="secondary">
+                  .map((m) => (
+                    <Badge key={m._key ?? m.name} variant="secondary">
                       {m.name} — {ROLES.find((r) => r.value === m.role)?.label ?? m.role}
                     </Badge>
                   ))}

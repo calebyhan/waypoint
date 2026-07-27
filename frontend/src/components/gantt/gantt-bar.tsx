@@ -35,8 +35,15 @@ export function GanttBar({
   const colorClass = PRIORITY_BAR_COLORS[task.priority] ?? PRIORITY_BAR_COLORS.p1;
   const statusClass = STATUS_PATTERNS[task.status] ?? "";
 
+  // Known limitation: drag-to-move (onMouseDownMove) and drag-to-resize
+  // (onMouseDownResize) are pointer-only interactions; a full keyboard
+  // reschedule flow is out of scope. Enter/Space opens the task detail panel,
+  // where dates can be edited with the keyboard.
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`${task.title}, priority ${task.priority}, status ${task.status}${epicTitle ? `, epic ${epicTitle}` : ""}`}
       className={`absolute flex items-center rounded-md text-white text-xs font-medium select-none ${colorClass} ${statusClass} ${
         isDragging ? "z-30 shadow-lg scale-[1.02]" : "z-10 shadow-sm"
       }`}
@@ -53,12 +60,23 @@ export function GanttBar({
         e.stopPropagation();
         onClick();
       }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
       title={`${task.title}${epicTitle ? ` (${epicTitle})` : ""}`}
     >
-      <span className="truncate px-2">{task.title}</span>
+      {/* Priority is also shown as text so it is not conveyed by color alone. */}
+      <span className="truncate px-2">
+        {task.priority.toUpperCase()} · {task.title}
+      </span>
 
-      {/* Resize handle */}
+      {/* Resize handle — pointer-only affordance; the detail panel provides the accessible path. */}
       <div
+        role="presentation"
+        aria-hidden="true"
         className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/20 rounded-r-md"
         onMouseDown={onMouseDownResize}
       />
