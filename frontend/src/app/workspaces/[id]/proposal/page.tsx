@@ -396,6 +396,7 @@ export default function ProposalPage() {
                                 onValueChange={(v) => {
                                   if (v) handleLocalEdit(task.id, "priority", v);
                                 }}
+                                items={{ p0: "p0", p1: "p1", p2: "p2" }}
                               >
                                 <SelectTrigger className="w-24">
                                   <SelectValue />

@@ -7,9 +7,11 @@ from postgrest.exceptions import APIError
 from pydantic import BaseModel
 from supabase import Client
 
+from core.config import settings
 from core.deps import get_current_user
 from core.permissions import assert_role, assert_workspace_active, get_role
 from core.supabase import get_supabase
+from services import notifications
 from services.github import get_github_token, list_repos as gh_list_repos, validate_repo
 
 # Roles allowed to see the workspace's webhook HMAC secret. A plain member
@@ -408,6 +410,7 @@ async def create_invite(
             "role": body.role,
             "invited_by": user["id"],
             "status": "pending",
+            "token": secrets.token_urlsafe(32),
         }).execute()
     except APIError as e:
         # Unique index uq_workspace_invites_pending violation -> a pending
@@ -418,7 +421,30 @@ async def create_invite(
                 detail="An invite is already pending for this GitHub username.",
             ) from e
         raise
-    return result.data[0]
+
+    invite = result.data[0]
+
+    # Notify the recipient in-app. If they already have an account this lands in
+    # their bell immediately; if not, the row is addressed to their GitHub
+    # username and gets claimed the first time they sign in. Either way the
+    # invite URL below is the only channel that reaches someone who has never
+    # heard of Waypoint — the PM has to deliver it themselves.
+    workspace = db.table("workspaces").select("name").eq("id", workspace_id).execute()
+    inviter = db.table("profiles").select("github_username").eq("id", user["id"]).execute()
+    notifications.notify(
+        db,
+        type=notifications.TYPE_INVITE,
+        github_username=github_username,
+        workspace_id=workspace_id,
+        payload={
+            "workspace_name": workspace.data[0]["name"] if workspace.data else None,
+            "invited_by": inviter.data[0]["github_username"] if inviter.data else None,
+            "role": body.role,
+            "token": invite["token"],
+        },
+    )
+
+    return {**invite, "invite_url": f"{settings.frontend_url}/invite/{invite['token']}"}
 
 
 @router.get("/{workspace_id}/invites")
@@ -440,6 +466,9 @@ async def list_invites(
     for invite in result.data:
         expires_at = _parse_timestamp(invite.get("expires_at"))
         invite["is_expired"] = expires_at is not None and expires_at <= now
+        # Surfaced so a PM can re-copy the link if the first delivery was missed.
+        if invite.get("token"):
+            invite["invite_url"] = f"{settings.frontend_url}/invite/{invite['token']}"
     return result.data
 
 
@@ -562,7 +591,13 @@ async def update_team_member(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
     if "role" in updates and updates["role"] not in VALID_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid role: {updates['role']}")
-    result = db.table("team_members").update(updates).eq("id", member_id).execute()
+    result = (
+        db.table("team_members")
+        .update(updates)
+        .eq("id", member_id)
+        .eq("workspace_id", workspace_id)
+        .execute()
+    )
     return result.data[0] if result.data else None
 
 
@@ -575,7 +610,7 @@ async def delete_team_member(
 ):
     assert_role(db, workspace_id, user["id"], minimum="pm")
     assert_workspace_active(db, workspace_id)
-    db.table("team_members").delete().eq("id", member_id).execute()
+    db.table("team_members").delete().eq("id", member_id).eq("workspace_id", workspace_id).execute()
 
 
 class LinkTeamMember(BaseModel):

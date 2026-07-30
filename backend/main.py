@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
 from core.scheduler import start_scheduler, stop_scheduler
-from routers import auth, dashboard, ingest, projects, webhooks, workspaces
+from routers import auth, dashboard, ingest, invites, notifications, projects, webhooks, workspaces
 
 
 @asynccontextmanager
@@ -31,6 +31,8 @@ app.include_router(ingest.router)
 app.include_router(projects.router)
 app.include_router(webhooks.router)
 app.include_router(dashboard.router)
+app.include_router(invites.router)
+app.include_router(notifications.router)
 
 
 @app.get("/health")

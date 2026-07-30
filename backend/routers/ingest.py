@@ -277,6 +277,15 @@ async def _do_decompose(
         project_context.assign_day,
     )
 
+    # Persist the schedule settings used for this ingestion onto the workspace
+    # itself, so the settings page's timeline section reflects what was
+    # actually used to schedule tasks instead of showing the column defaults.
+    db.table("workspaces").update({
+        "schedule_start_date": project_context.start_date or None,
+        "tickets_per_member_per_week": project_context.tickets_per_member_per_week,
+        "assign_day": project_context.assign_day,
+    }).eq("id", workspace_id).execute()
+
     # Upsert (not insert): replaces any partial-progress row for this content
     # and collapses concurrent duplicate ingests onto a single cache row.
     db.table("ingestions").upsert({

@@ -113,6 +113,40 @@ class TestUsageLogging:
         assert {(r["tokens_in"], r["tokens_out"]) for r in usage_rows} == {(111, 22), (3456, 789)}
 
 
+class TestWorkspaceScheduleSync:
+    def test_decompose_persists_schedule_settings_to_workspace(
+        self, client, fake_db, workspace, profile, monkeypatch
+    ):
+        """Regression: the settings page timeline read schedule_start_date /
+        tickets_per_member_per_week / assign_day off the workspace row, but
+        ingestion only used them transiently to schedule tasks and never
+        wrote them back -- so the fields always showed empty."""
+        monkeypatch.setattr(ingest_module, "generate_questions", _no_questions())
+
+        async def fake_decompose(*args, **kwargs):
+            return _decomposition(), {"tokens_in": 1, "tokens_out": 1}
+
+        monkeypatch.setattr(ingest_module, "decompose_prd", fake_decompose)
+
+        res = client.post(
+            f"/workspaces/{workspace['id']}/ingest",
+            json={
+                "content": "PRD",
+                "context": {
+                    "start_date": "2026-08-03",
+                    "tickets_per_member_per_week": 2,
+                    "assign_day": 1,
+                },
+            },
+        )
+        assert res.status_code == 200
+
+        ws = fake_db.table("workspaces").select("*").eq("id", workspace["id"]).single().execute().data
+        assert ws["schedule_start_date"] == "2026-08-03"
+        assert ws["tickets_per_member_per_week"] == 2
+        assert ws["assign_day"] == 1
+
+
 class TestCaching:
     def test_identical_content_served_from_cache(self, client, fake_db, workspace, profile, monkeypatch):
         calls = {"n": 0}

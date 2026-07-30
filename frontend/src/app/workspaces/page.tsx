@@ -47,6 +47,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 import { useSession } from "@/hooks/use-session";
 import { apiFetch, type ApiError } from "@/lib/api";
 import { ErrorState } from "@/components/ui/error-state";
@@ -281,6 +282,8 @@ export default function WorkspacesPage() {
               </div>
             </DialogContent>
           </Dialog>
+
+          <NotificationBell />
 
           <DropdownMenu>
             <DropdownMenuTrigger

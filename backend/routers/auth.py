@@ -8,6 +8,7 @@ from core.crypto import decrypt_or_plaintext, encrypt
 from core.deps import get_current_user
 from core.permissions import get_role
 from core.supabase import get_supabase
+from services import notifications
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -146,6 +147,10 @@ def _resolve_pending_invites(db: Client, user: dict) -> None:
     if not github_username:
         return
 
+    # Bind any notifications addressed to this GitHub handle before an account
+    # existed (e.g. the invite notification itself) to the now-known profile.
+    notifications.claim_pending(db, user["id"], github_username)
+
     pending = (
         db.table("workspace_invites")
         .select("*")
@@ -174,4 +179,30 @@ def _resolve_pending_invites(db: Client, user: dict) -> None:
             },
             on_conflict="workspace_id,user_id",
         ).execute()
-        db.table("workspace_invites").update({"status": "accepted"}).eq("id", invite["id"]).execute()
+        db.table("workspace_invites").update({
+            "status": "accepted",
+            "accepted_by": user["id"],
+        }).eq("id", invite["id"]).execute()
+
+        workspace = db.table("workspaces").select("name").eq("id", invite["workspace_id"]).execute()
+        notifications.notify(
+            db,
+            type=notifications.TYPE_ADDED_TO_WORKSPACE,
+            user_id=user["id"],
+            workspace_id=invite["workspace_id"],
+            payload={
+                "workspace_name": workspace.data[0]["name"] if workspace.data else None,
+                "role": invite["role"],
+            },
+        )
+        notifications.notify(
+            db,
+            type=notifications.TYPE_INVITE_ACCEPTED,
+            user_id=invite["invited_by"],
+            workspace_id=invite["workspace_id"],
+            payload={
+                "github_username": github_username,
+                "role": invite["role"],
+                "workspace_name": workspace.data[0]["name"] if workspace.data else None,
+            },
+        )

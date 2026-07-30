@@ -31,8 +31,14 @@ export async function updateSession(request: NextRequest) {
 
   const isAuthPage = request.nextUrl.pathname === "/login";
   const isAuthCallback = request.nextUrl.pathname === "/auth/callback";
+  // Invite links must be reachable signed-out — the recipient frequently has no
+  // account at all, and bouncing them to /login would discard the token that is
+  // the entire point of the link. The page itself starts the OAuth flow with a
+  // `next` back to this URL. Possession of the token is not authorization: the
+  // backend still binds acceptance to the invited GitHub username.
+  const isInvitePage = request.nextUrl.pathname.startsWith("/invite/");
 
-  if (!user && !isAuthPage && !isAuthCallback) {
+  if (!user && !isAuthPage && !isAuthCallback && !isInvitePage) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);

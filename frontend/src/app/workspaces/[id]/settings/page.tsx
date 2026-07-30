@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, RefreshCw, AlertTriangle, FileText, UserPlus, X } from "lucide-react";
+import { ArrowLeft, Copy, Plus, Trash2, RefreshCw, AlertTriangle, FileText, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,6 +43,8 @@ const ROLES = [
   { value: "pm", label: "PM" },
 ] as const;
 
+const ROLE_ITEMS: Record<string, string> = Object.fromEntries(ROLES.map((r) => [r.value, r.label]));
+
 const WEEKDAYS = [
   { value: "-1", label: "No preference" },
   { value: "0", label: "Monday" },
@@ -51,6 +53,10 @@ const WEEKDAYS = [
   { value: "3", label: "Thursday" },
   { value: "4", label: "Friday" },
 ] as const;
+
+const WEEKDAY_ITEMS: Record<string, string> = Object.fromEntries(WEEKDAYS.map((d) => [d.value, d.label]));
+
+const MEMBER_ROLE_ITEMS: Record<string, string> = { pm: "PM", member: "Member" };
 
 interface Workspace {
   id: string;
@@ -85,6 +91,27 @@ interface Invite {
   github_username: string;
   role: "pm" | "member";
   status: string;
+  invite_url?: string;
+  is_expired?: boolean;
+}
+
+/**
+ * Copy text, falling back to a prompt where the async Clipboard API is
+ * unavailable (it requires a secure context, so plain-HTTP deployments and
+ * some in-app browsers don't have it). The invite link is useless if the PM
+ * can't actually get it out of the page.
+ */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through to the manual path
+  }
+  window.prompt("Copy this invite link:", text);
+  return false;
 }
 
 const UNLINKED = "__unlinked__";
@@ -194,15 +221,29 @@ export default function SettingsPage() {
 
   const inviteMutation = useMutation({
     mutationFn: () =>
-      apiFetch(`/workspaces/${id}/invites`, {
+      apiFetch<Invite>(`/workspaces/${id}/invites`, {
         method: "POST",
         token: session!.access_token,
         body: JSON.stringify({ github_username: inviteUsername.trim(), role: inviteRole }),
       }),
-    onSuccess: () => {
+    onSuccess: async (invite) => {
       queryClient.invalidateQueries({ queryKey: ["invites", id] });
+      const username = inviteUsername.trim();
       setInviteUsername("");
-      toast.success("Invite sent");
+
+      // Waypoint has no way to contact someone who hasn't signed up (auth is
+      // GitHub-only, so we hold no email address). The PM delivers the link.
+      if (invite?.invite_url) {
+        const copied = await copyToClipboard(invite.invite_url);
+        toast.success(
+          copied
+            ? `Invite link copied — send it to @${username}`
+            : `Invite created for @${username}`,
+          { description: "They join by opening the link and signing in with GitHub." },
+        );
+      } else {
+        toast.success(`Invite created for @${username}`);
+      }
     },
     onError: toastApiError("Failed to create invite"),
   });
@@ -425,6 +466,7 @@ export default function SettingsPage() {
                         v && canManage && updateRoleMutation.mutate({ userId: m.user_id, role: v as "pm" | "member" })
                       }
                       disabled={!canManage}
+                      items={MEMBER_ROLE_ITEMS}
                     >
                       <SelectTrigger className="w-32">
                         <SelectValue />
@@ -465,6 +507,7 @@ export default function SettingsPage() {
                       value={inviteRole}
                       onValueChange={(v) => v && setInviteRole(v as "pm" | "member")}
                       disabled={inviteMutation.isPending}
+                      items={MEMBER_ROLE_ITEMS}
                     >
                       <SelectTrigger className="w-32">
                         <SelectValue />
@@ -483,13 +526,33 @@ export default function SettingsPage() {
                     </Button>
                   </div>
 
+                  <p className="text-xs text-muted-foreground">
+                    Waypoint can&apos;t email people — sign-in is GitHub-only. Creating an
+                    invite gives you a link to send them yourself.
+                  </p>
+
                   {invites && invites.length > 0 ? (
                     <div className="space-y-1.5 pt-1">
                       {invites.map((inv) => (
                         <div key={inv.id} className="flex items-center gap-2 text-sm text-muted-foreground">
                           <span className="flex-1">
-                            {inv.github_username} · invited as {inv.role} · pending
+                            {inv.github_username} · invited as {inv.role} ·{" "}
+                            {inv.is_expired ? "expired" : "awaiting sign-in"}
                           </span>
+                          {inv.invite_url && !inv.is_expired && (
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`Copy invite link for ${inv.github_username}`}
+                              title="Copy invite link"
+                              onClick={async () => {
+                                const copied = await copyToClipboard(inv.invite_url!);
+                                if (copied) toast.success("Invite link copied");
+                              }}
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon-sm"
@@ -534,6 +597,7 @@ export default function SettingsPage() {
                     value={member.role}
                     onValueChange={(v) => v && updateMember(i, "role", v)}
                     disabled={!canManage}
+                    items={ROLE_ITEMS}
                   >
                     <SelectTrigger className="w-32">
                       <SelectValue />
@@ -563,6 +627,12 @@ export default function SettingsPage() {
                           userId: v === UNLINKED ? null : v,
                         })
                       }
+                      items={{
+                        [UNLINKED]: "Not linked",
+                        ...Object.fromEntries(
+                          (members ?? []).map((m) => [m.user_id, m.github_username ?? m.user_id]),
+                        ),
+                      }}
                     >
                       <SelectTrigger className="w-40" title="Link to account">
                         <SelectValue placeholder="Link to account" />
@@ -659,6 +729,7 @@ export default function SettingsPage() {
                       setScheduleDirty(true);
                     }
                   }}
+                  items={WEEKDAY_ITEMS}
                 >
                   <SelectTrigger className="w-48">
                     <SelectValue />

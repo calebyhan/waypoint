@@ -37,6 +37,25 @@ const ROLES = [
   { value: "pm", label: "PM" },
 ] as const;
 
+const ROLE_ITEMS: Record<string, string> = Object.fromEntries(ROLES.map((r) => [r.value, r.label]));
+
+const TICKET_PACE_ITEMS: Record<string, string> = {
+  "0": "No limit (back-to-back)",
+  "1": "1 ticket / person / week",
+  "2": "2 tickets / person / week",
+  "3": "3 tickets / person / week",
+  "5": "5 tickets / person / week",
+};
+
+const ASSIGN_DAY_ITEMS: Record<string, string> = {
+  "-1": "Any day",
+  "0": "Monday",
+  "1": "Tuesday",
+  "2": "Wednesday",
+  "3": "Thursday",
+  "4": "Friday",
+};
+
 interface TeamMember {
   name: string;
   role: string;
@@ -330,6 +349,7 @@ export default function IngestPage() {
                   <Select
                     value={member.role}
                     onValueChange={(v) => updateMember(i, "role", v ?? member.role)}
+                    items={ROLE_ITEMS}
                   >
                     <SelectTrigger className="w-full">
                       <SelectValue />
@@ -453,6 +473,7 @@ export default function IngestPage() {
                       tickets_per_member_per_week: parseFloat(v ?? "0"),
                     }))
                   }
+                  items={TICKET_PACE_ITEMS}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue />
@@ -481,6 +502,7 @@ export default function IngestPage() {
                       assign_day: parseInt(v ?? "-1"),
                     }))
                   }
+                  items={ASSIGN_DAY_ITEMS}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue />
