@@ -26,6 +26,7 @@ import { apiFetch, type ApiError } from "@/lib/api";
 import { ErrorState } from "@/components/ui/error-state";
 import { PRIORITY_COLORS } from "@/lib/priority-colors";
 import { toast } from "sonner";
+import { promptDialog } from "@/components/ui/dialog-host";
 
 interface Task {
   id: string;
@@ -311,8 +312,8 @@ export default function ProposalPage() {
           <Button
             variant="outline"
             className="mt-4"
-            onClick={() => {
-              const title = prompt("Epic title:");
+            onClick={async () => {
+              const title = await promptDialog({ title: "Epic title", placeholder: "Epic title" });
               if (title) createEpicMutation.mutate(title);
             }}
           >
@@ -494,8 +495,8 @@ export default function ProposalPage() {
                     variant="ghost"
                     size="sm"
                     className="w-full"
-                    onClick={() => {
-                      const title = prompt("Task title:");
+                    onClick={async () => {
+                      const title = await promptDialog({ title: "Task title", placeholder: "Task title" });
                       if (title) createTaskMutation.mutate({ epic_id: epic.id, title });
                     }}
                   >
@@ -508,8 +509,8 @@ export default function ProposalPage() {
         })}
         <Button
           variant="outline"
-          onClick={() => {
-            const title = prompt("Epic title:");
+          onClick={async () => {
+            const title = await promptDialog({ title: "Epic title", placeholder: "Epic title" });
             if (title) createEpicMutation.mutate(title);
           }}
         >

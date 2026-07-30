@@ -25,6 +25,7 @@ import { useSession } from "@/hooks/use-session";
 import { apiFetch, ApiError } from "@/lib/api";
 import { ErrorState } from "@/components/ui/error-state";
 import { toast } from "sonner";
+import { confirmDialog, linkDialog } from "@/components/ui/dialog-host";
 
 /** Surface the backend's ApiError.detail in toasts so distinct failure modes read distinctly. */
 function toastApiError(fallback: string) {
@@ -110,7 +111,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
   } catch {
     // fall through to the manual path
   }
-  window.prompt("Copy this invite link:", text);
+  await linkDialog({ title: "Copy this invite link", value: text });
   return false;
 }
 
@@ -482,9 +483,13 @@ export default function SettingsPage() {
                       variant="ghost"
                       size="icon-sm"
                       aria-label={`Remove ${m.github_username ?? m.user_id} from the workspace`}
-                      onClick={() => {
-                        if (confirm(`Remove ${m.github_username ?? "this member"} from the workspace?`))
-                          removeMemberMutation.mutate(m.user_id);
+                      onClick={async () => {
+                        const confirmed = await confirmDialog({
+                          title: `Remove ${m.github_username ?? "this member"} from the workspace?`,
+                          confirmLabel: "Remove",
+                          destructive: true,
+                        });
+                        if (confirmed) removeMemberMutation.mutate(m.user_id);
                       }}
                     >
                       <X className="h-4 w-4 text-muted-foreground" />
@@ -557,9 +562,13 @@ export default function SettingsPage() {
                             variant="ghost"
                             size="icon-sm"
                             aria-label={`Revoke invite for ${inv.github_username}`}
-                            onClick={() => {
-                              if (confirm(`Revoke invite for ${inv.github_username}?`))
-                                revokeInviteMutation.mutate(inv.id);
+                            onClick={async () => {
+                              const confirmed = await confirmDialog({
+                                title: `Revoke invite for ${inv.github_username}?`,
+                                confirmLabel: "Revoke",
+                                destructive: true,
+                              });
+                              if (confirmed) revokeInviteMutation.mutate(inv.id);
                             }}
                           >
                             <X className="h-4 w-4" />
@@ -784,8 +793,14 @@ export default function SettingsPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => {
-                    if (confirm("Archive this workspace?")) archiveMutation.mutate();
+                  onClick={async () => {
+                    const confirmed = await confirmDialog({
+                      title: "Archive this workspace?",
+                      description: "Hide from workspace list. Can be restored later.",
+                      confirmLabel: "Archive",
+                      destructive: true,
+                    });
+                    if (confirmed) archiveMutation.mutate();
                   }}
                   disabled={!canManage || archiveMutation.isPending}
                 >
@@ -803,9 +818,14 @@ export default function SettingsPage() {
                   variant="outline"
                   size="sm"
                   className="border-destructive/40 text-destructive hover:bg-destructive/10"
-                  onClick={() => {
-                    if (confirm("Delete this workspace permanently? This cannot be undone."))
-                      deleteMutation.mutate();
+                  onClick={async () => {
+                    const confirmed = await confirmDialog({
+                      title: "Delete this workspace permanently?",
+                      description: "This cannot be undone.",
+                      confirmLabel: "Delete",
+                      destructive: true,
+                    });
+                    if (confirmed) deleteMutation.mutate();
                   }}
                   disabled={myRole !== "owner" || deleteMutation.isPending}
                 >
